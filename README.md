@@ -39,7 +39,7 @@ ollama pull llama3.2:1b
 From the project root:
 
 ```bash
-python3 chatbot.py
+python chatbot.py
 ```
 
 Type messages at the prompt. Use `exit` or `quit` to stop.
