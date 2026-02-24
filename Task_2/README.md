@@ -34,7 +34,14 @@ python chatbot-OpenAI.py --provider ollama
 
 Use OpenAI:
 
-1. Set your key in `.env`:
+1. Create an env file named `.env` (the filename must be exactly `.env`).
+
+	You can either:
+
+	- copy `example.env` to `.env`, or
+	- create a new file named `.env` manually.
+
+	Example value inside `.env`:
 
 ```env
 OPENAI_API_KEY=your_key_here
