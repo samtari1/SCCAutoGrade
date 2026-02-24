@@ -6,6 +6,11 @@ Auto Grading Project
 
 This repository includes a simple command-line chatbot script: `chatbot.py`.
 
+You can switch between providers:
+
+- `ollama` (default)
+- `openai`
+
 ### 1) Install Ollama (macOS)
 
 Using Homebrew:
@@ -40,6 +45,26 @@ From the project root:
 
 ```bash
 python chatbot.py
+```
+
+To explicitly use Ollama:
+
+```bash
+python chatbot.py --provider ollama
+```
+
+To use OpenAI:
+
+```bash
+export OPENAI_API_KEY="your_api_key"
+python chatbot.py --provider openai
+```
+
+Optional: choose a specific model
+
+```bash
+python chatbot.py --provider openai --model gpt-4o-mini
+python chatbot.py --provider ollama --model llama3.2:1b
 ```
 
 Type messages at the prompt. Use `exit` or `quit` to stop.
