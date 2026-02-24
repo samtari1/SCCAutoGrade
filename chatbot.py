@@ -6,6 +6,8 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "llama3.2:1b"
 
 
+
+
 def chat(messages, model=MODEL):
     payload = {
         "model": model,
