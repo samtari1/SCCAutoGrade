@@ -1,0 +1,7 @@
+langchain-community # 
+langchain-openai # For the OpenAI API
+langchain-core # For core LangChain functionality
+unstructured[md] # Document loading
+chromadb # Vector storage
+openai # For embeddings
+tiktoken  # For embeddings
