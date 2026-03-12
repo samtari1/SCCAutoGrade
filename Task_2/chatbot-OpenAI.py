@@ -12,6 +12,8 @@ DEFAULT_OLLAMA_MODEL = "llama3.2:1b"
 DEFAULT_OPENAI_MODEL = "gpt-5-nano"
 
 
+ 
+
 def chat_ollama(messages, model):
     payload = {
         "model": model,
