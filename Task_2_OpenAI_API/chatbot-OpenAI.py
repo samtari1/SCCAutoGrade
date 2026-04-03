@@ -6,7 +6,7 @@ import urllib.request
 
 from dotenv import load_dotenv
 
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_URL = "https://api.openai.com/v1/responses"
 DEFAULT_OPENAI_MODEL = "gpt-5-nano"
 
 
@@ -17,7 +17,7 @@ def chat_openai(messages, model):
 
     payload = {
         "model": model,
-        "messages": messages,
+        "input": messages[-1]["content"],
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -33,7 +33,7 @@ def chat_openai(messages, model):
     with urllib.request.urlopen(req, timeout=120) as response:
         body = response.read().decode("utf-8")
         parsed = json.loads(body)
-        return parsed["choices"][0]["message"]["content"]
+        return parsed["output"][0]["content"]["text"]
 
 
 def chat(messages, model):
