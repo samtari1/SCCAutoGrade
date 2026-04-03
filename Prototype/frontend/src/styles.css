@@ -1,0 +1,119 @@
+:root {
+  color-scheme: light;
+  --ink: #1b1e26;
+  --paper: #fdf9f2;
+  --card: #fffefb;
+  --line: #d5cdb8;
+  --accent: #a6291f;
+  --accent-soft: #f9dfd8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 15% 20%, #ffe9d4 0%, transparent 35%),
+    radial-gradient(circle at 85% 10%, #ffd5bf 0%, transparent 30%),
+    var(--paper);
+}
+
+.page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 1rem 3rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(1.7rem, 4vw, 2.6rem);
+}
+
+.hero p {
+  margin: 0.5rem 0 0;
+  max-width: 58ch;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  box-shadow: 0 10px 30px rgba(75, 45, 18, 0.08);
+}
+
+.form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+input[type="file"] {
+  font: inherit;
+}
+
+select {
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+button {
+  width: fit-content;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 0.65rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status strong {
+  text-transform: capitalize;
+}
+
+.error {
+  color: #9c1f15;
+  background: var(--accent-soft);
+  border: 1px solid #efc0b7;
+  border-radius: 8px;
+  padding: 0.5rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+.stream-panel {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #1f1b17;
+  color: #f6f0e8;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

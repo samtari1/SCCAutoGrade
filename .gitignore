@@ -208,3 +208,14 @@ __marimo__/
 
 
 .DS_Store
+
+.logs/
+node_modules/
+
+# Project-specific generated artifacts
+Prototype/backend/data/jobs/
+Task_3_RAG/chroma/
+Prototype/frontend/.vite/
+
+# Local databases
+*.sqlite3

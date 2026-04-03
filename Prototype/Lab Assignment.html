@@ -1,0 +1,89 @@
+<p dir="ltr" style="text-align: left;"></p>
+<h2>Lab Assignment: Loops</h2>
+<h3>Objective</h3>
+<ul>
+    <li>Practice using&nbsp;<code>for</code>,&nbsp;<code>foreach</code>,&nbsp;<code>while</code>, and&nbsp;<code>do...while</code>&nbsp;loops.</li>
+    <li>Learn to control loop execution using counters and conditions.</li>
+    <li>Create interactive Windows Forms UI to input data and display loop results.</li>
+    <li>Understand when to use each type of loop in practical scenarios.</li>
+</ul>
+<h3>Lab Description</h3>
+<p>In this lab, you will build a&nbsp;<strong>C# Windows Forms application</strong>&nbsp;that demonstrates the four types of loops. The program has three main sections:</p>
+<ol>
+    <li><strong>Number Printer Section</strong>&nbsp;– print numbers using a&nbsp;<code>for</code>&nbsp;loop.</li>
+    <li><strong>Letter Display Section</strong>&nbsp;– display each character of a text using a&nbsp;<code>foreach</code>&nbsp;loop.</li>
+    <li><strong>Interactive Counter Section</strong>&nbsp;– use&nbsp;<code>while</code>&nbsp;and&nbsp;<code>do...while</code>&nbsp;loops for user input.</li>
+</ol>
+<h3>Steps</h3>
+<h4>Step 1: Number Printer Section (Using&nbsp;<code>for</code>&nbsp;Loop)</h4>
+<p>In&nbsp;<code>Form1</code>, create:</p>
+<ul>
+    <li>A&nbsp;<code>TextBox</code>&nbsp;to enter a positive integer&nbsp;<code>n</code>.</li>
+    <li>A&nbsp;<code>Button</code>&nbsp;to start printing numbers.</li>
+    <li>A&nbsp;<code>Label</code>&nbsp;to display numbers from 1 to&nbsp;<code>n</code>.</li>
+</ul>
+<p>Behavior:</p>
+<ul>
+    <li>Use a&nbsp;<code>for</code>&nbsp;loop to generate numbers from 1 to&nbsp;<code>n</code>&nbsp;and display them.</li>
+    <li>If&nbsp;<code>n &lt;= 0</code>, display "Please enter a positive integer."</li>
+</ul>
+<p>Expected Output Example:</p>
+<ul>
+    <li>Input:&nbsp;<code>n = 5</code></li>
+    <li>Label displays:&nbsp;<code>1 2 3 4 5</code></li>
+    <li>Input:&nbsp;<code>n = -2</code></li>
+    <li>Label displays:&nbsp;<code>Please enter a positive integer.</code></li>
+</ul>
+<p><span style="font-size: 13.1078px;">Hint: To display the intermediate values in each iteration in the loop, you can use string concatenation. Otherwise, you will only see the last iteration's value because the loop happens so fast, that every previous iteration is overwritten by the next iteration. Therefor you need to add the previous value in the next iteration by concatenation.<br></span></p>
+<h4>Step 2: Letter Display Section (Using&nbsp;<code>foreach</code>&nbsp;Loop)</h4>
+<p>In&nbsp;<code>Form1</code>, create:</p>
+<ul>
+    <li>A&nbsp;<code>TextBox</code>&nbsp;for the user to enter a word or sentence.</li>
+    <li>A&nbsp;<code>Button</code>&nbsp;labeled "Show Letters".</li>
+    <li>A&nbsp;<code>Label</code>&nbsp;to display each letter.</li>
+</ul>
+<p>Behavior:</p>
+<ul>
+    <li>Use a&nbsp;<code>foreach</code>&nbsp;loop to iterate over each character in the input string and display it.</li>
+    <li>Ignore empty input and show a message like "Please enter some text."</li>
+</ul>
+<p>Expected Output Example:</p>
+<ul>
+    <li>Input:&nbsp;<code>Hello</code></li>
+    <li>Label displays:<br>H<br>e<br>l<br>l<br>o</li>
+    <li>Input:&nbsp;<code>(empty)</code></li>
+    <li>Label displays:&nbsp;<code>Please enter some text.</code></li>
+</ul>
+<h4>Step 3: Interactive Counter Section (Using&nbsp;<code>while</code>&nbsp;and&nbsp;<code>do...while</code>&nbsp;Loops)</h4>
+<p>In&nbsp;<code>Form1</code>, create:</p>
+<ul>
+    <li>A&nbsp;<code>TextBox</code>&nbsp;for user input of a number.</li>
+    <li>Two&nbsp;<code>Buttons</code>: one for&nbsp;<code>while</code>&nbsp;loop, one for&nbsp;<code>do...while</code>&nbsp;loop.</li>
+    <li>A&nbsp;<code>Label</code>&nbsp;to display output.</li>
+</ul>
+<p>Behavior:</p>
+<ul>
+    <li><strong>While Loop Button:</strong>&nbsp;repeatedly double the number until it exceeds 100 and display each value.</li>
+    <li><strong>Do...While Loop Button:</strong>&nbsp;repeatedly subtract 5 from the number until it is less than or equal to 0 and display each value.</li>
+</ul>
+<p>Expected Output Examples:</p>
+<ul>
+    <li>Input:&nbsp;<code>10</code>,&nbsp;<strong>While Loop</strong>&nbsp;Button → Label displays:&nbsp;<code>10 20 40 80 160</code></li>
+    <li>Input:&nbsp;<code>12</code>,&nbsp;<strong>Do...While Loop</strong>&nbsp;Button → Label displays:&nbsp;<code>12 7 2 -3</code></li>
+</ul>
+<p><strong>Requirements:</strong></p>
+<ul>
+    <li>Use all four loop types in separate sections of the program.</li>
+    <li>Validate user input (must be numeric and positive where applicable).</li>
+    <li>Display loop output clearly in the UI.</li>
+    <li>Ensure the program runs without errors.</li>
+</ul>
+<h3>Submission Requirements</h3>
+<ul>
+    <li>Create a single Windows Forms project containing all three sections in&nbsp;<code>Form1</code>.</li>
+    <li>Ensure the program compiles and runs correctly.</li>
+    <li>Compress the entire solution folder into a ZIP file.</li>
+    <li>Name the ZIP file&nbsp;<code>YourName-Loops.zip</code>.</li>
+    <li>Upload the ZIP file to Moodle before the deadline.</li>
+</ul><br>
+<p></p>
