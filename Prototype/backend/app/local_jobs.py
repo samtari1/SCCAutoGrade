@@ -18,6 +18,10 @@ def submit_local_job(
     evaluator_key: str,
     route_type: str,
     routing_reason: str,
+    code_specialty: str,
+    multi_agent_grading: bool,
+    multi_agent_disagreement_threshold: float,
+    multi_agent_part_disagreement_threshold: float,
 ) -> None:
     with _LOCK:
         _JOBS[job_id] = {
@@ -46,6 +50,10 @@ def submit_local_job(
                 evaluator_key=evaluator_key,
                 route_type=route_type,
                 routing_reason=routing_reason,
+                code_specialty=code_specialty,
+                multi_agent_grading=multi_agent_grading,
+                multi_agent_disagreement_threshold=multi_agent_disagreement_threshold,
+                multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
             )
             with _LOCK:
                 _JOBS[job_id]["status"] = result.get("status", "finished")

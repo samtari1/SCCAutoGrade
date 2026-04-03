@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 from pathlib import Path
 import shutil
 import uuid
 from typing import List
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
@@ -19,7 +20,7 @@ from .settings import JOBS_DIR, USE_INMEMORY_QUEUE, ensure_directories
 from .tasks import run_grading_job
 from .grading import register_default_evaluators
 from .grading.registry import get_evaluator, list_evaluators
-from .grading.routing import detect_route_type, map_route_to_evaluator
+from .grading.routing import detect_code_specialty, detect_route_type, map_route_to_evaluator
 
 
 app = FastAPI(title="AutoGrade API", version="0.1.0")
@@ -62,13 +63,20 @@ def get_evaluators() -> dict:
 async def create_job(
     main_zip: UploadFile = File(...),
     instructions_html: UploadFile = File(...),
-    evaluator_key: str = "auto",
+    evaluator_key: str = Form("auto"),
+    multi_agent_grading: bool = Form(True),
+    multi_agent_disagreement_threshold: float = Form(5.0),
+    multi_agent_part_disagreement_threshold: float = Form(10.0),
 ) -> CreateJobResponse:
     if not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
 
     if not instructions_html.filename or not instructions_html.filename.lower().endswith(".html"):
         raise HTTPException(status_code=400, detail="instructions_html must be a .html file")
+    if multi_agent_disagreement_threshold < 0:
+        raise HTTPException(status_code=400, detail="multi_agent_disagreement_threshold must be >= 0")
+    if multi_agent_part_disagreement_threshold < 0:
+        raise HTTPException(status_code=400, detail="multi_agent_part_disagreement_threshold must be >= 0")
 
     job_id = str(uuid.uuid4())
     job_dir = JOBS_DIR / job_id
@@ -87,10 +95,14 @@ async def create_job(
 
     instructions_text = instructions_path.read_text(encoding="utf-8", errors="ignore")
     route_type, routing_reason = detect_route_type(instructions_text)
+    code_specialty = "csharp"
+    if route_type == "code":
+        code_specialty, specialty_reason = detect_code_specialty(instructions_text)
+        routing_reason = f"{routing_reason}; specialty={code_specialty} ({specialty_reason})"
 
     selected_evaluator = evaluator_key.strip().lower()
     if selected_evaluator == "auto":
-        selected_evaluator = map_route_to_evaluator(route_type)
+        selected_evaluator = map_route_to_evaluator(route_type, code_specialty=code_specialty)
 
     try:
         get_evaluator(selected_evaluator)
@@ -99,7 +111,12 @@ async def create_job(
 
     stream_log = job_dir / "stream.log"
     stream_log.write_text(
-        f"[router] route_type={route_type}; evaluator={selected_evaluator}; reason={routing_reason}\n",
+        (
+            f"[router] route_type={route_type}; evaluator={selected_evaluator}; reason={routing_reason}; "
+            f"multi_agent={str(multi_agent_grading).lower()}; "
+            f"disagreement_threshold={multi_agent_disagreement_threshold}; "
+            f"part_disagreement_threshold={multi_agent_part_disagreement_threshold}\n"
+        ),
         encoding="utf-8",
     )
 
@@ -112,6 +129,10 @@ async def create_job(
             evaluator_key=selected_evaluator,
             route_type=route_type,
             routing_reason=routing_reason,
+            code_specialty=code_specialty,
+            multi_agent_grading=multi_agent_grading,
+            multi_agent_disagreement_threshold=multi_agent_disagreement_threshold,
+            multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
         )
     else:
         queue = get_queue()
@@ -124,6 +145,10 @@ async def create_job(
             selected_evaluator,
             route_type,
             routing_reason,
+            code_specialty,
+            multi_agent_grading,
+            multi_agent_disagreement_threshold,
+            multi_agent_part_disagreement_threshold,
             job_id=job_id,
             job_timeout="2h",
         )
@@ -138,10 +163,20 @@ async def create_job(
 
 
 def _build_job_status(job_id: str) -> JobStatusResponse:
+    output_dir = JOBS_DIR / job_id / "output"
+    current_artifacts: List[str] = []
+    if output_dir.exists():
+        current_artifacts = sorted([p.name for p in output_dir.glob("*") if p.is_file()])
+
     if USE_INMEMORY_QUEUE:
         job_data = get_local_job(job_id)
         if not job_data:
             raise HTTPException(status_code=404, detail="Job not found")
+
+        artifact_files = sorted(
+            set(job_data.get("artifact_files", [])) | set(current_artifacts)
+        )
+
         return JobStatusResponse(
             job_id=job_id,
             status=job_data.get("status", "unknown"),
@@ -150,7 +185,7 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
             evaluator_key=job_data.get("evaluator_key"),
             route_type=job_data.get("route_type"),
             routing_reason=job_data.get("routing_reason"),
-            artifact_files=job_data.get("artifact_files", []),
+            artifact_files=artifact_files,
             confidence=job_data.get("confidence"),
         )
 
@@ -163,6 +198,9 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
 
     if job.is_finished:
         result = job.result or {}
+        artifact_files = sorted(
+            set(result.get("artifact_files", [])) | set(current_artifacts)
+        )
         return JobStatusResponse(
             job_id=job_id,
             status="finished",
@@ -170,7 +208,7 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
             evaluator_key=result.get("evaluator_key"),
             route_type=result.get("route_type"),
             routing_reason=result.get("routing_reason"),
-            artifact_files=result.get("artifact_files", []),
+            artifact_files=artifact_files,
             confidence=result.get("confidence"),
         )
 
@@ -201,6 +239,7 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
         message=message,
         route_type=route_type,
         routing_reason=routing_reason,
+        artifact_files=current_artifacts,
     )
 
 
@@ -287,4 +326,11 @@ def download_artifact(job_id: str, filename: str):
     if not resolved_file.exists() or not resolved_file.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
 
-    return FileResponse(path=resolved_file, filename=resolved_file.name)
+    guessed_media_type, _ = mimetypes.guess_type(str(resolved_file))
+    media_type = guessed_media_type or "application/octet-stream"
+
+    return FileResponse(
+        path=resolved_file,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{resolved_file.name}"'},
+    )

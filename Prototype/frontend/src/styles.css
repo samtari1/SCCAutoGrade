@@ -63,6 +63,14 @@ input[type="file"] {
   font: inherit;
 }
 
+input[type="number"] {
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
 select {
   font: inherit;
   padding: 0.45rem 0.55rem;
@@ -103,8 +111,51 @@ a {
   color: var(--accent);
 }
 
-.stream-panel {
+.options-grid {
+  display: grid;
+  gap: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: #fff9f0;
+}
+
+.options-grid legend {
+  font-weight: 700;
+  padding: 0 0.35rem;
+}
+
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.stream-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.stream-header h3 {
   margin: 0;
+}
+
+.stream-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.stream-switch input {
+  margin: 0;
+}
+
+.stream-panel {
+  margin: 0.45rem 0 0;
   padding: 0.75rem;
   border-radius: 10px;
   border: 1px solid var(--line);
@@ -116,4 +167,11 @@ a {
   max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+@media (max-width: 640px) {
+  .stream-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

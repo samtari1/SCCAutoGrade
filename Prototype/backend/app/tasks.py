@@ -28,17 +28,14 @@ def run_grading_job(
     evaluator_key: str = "programming",
     route_type: str = "code",
     routing_reason: str = "",
+    code_specialty: str = "csharp",
+    multi_agent_grading: bool = True,
+    multi_agent_disagreement_threshold: float = 5.0,
+    multi_agent_part_disagreement_threshold: float = 10.0,
 ) -> Dict[str, Any]:
-    """RQ task that runs AutoGrade.py logic for one grading run."""
+    """RQ task that runs backend grading pipeline for one grading run."""
     _update_job_meta("started", "Preparing grading run")
     _update_job_meta("started", "Running grading")
-
-    # Ensure project root is importable for evaluator plugins that use AutoGrade.py.
-    root_dir = Path(__file__).resolve().parents[2]
-    import sys
-
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
 
     register_default_evaluators()
 
@@ -57,6 +54,12 @@ def run_grading_job(
                 main_zip_path=main_zip_path,
                 instructions_html_path=instructions_html_path,
                 output_dir=output_dir,
+                metadata={
+                    "code_specialty": code_specialty,
+                    "multi_agent_grading": multi_agent_grading,
+                    "multi_agent_disagreement_threshold": multi_agent_disagreement_threshold,
+                    "multi_agent_part_disagreement_threshold": multi_agent_part_disagreement_threshold,
+                },
             )
 
     _update_job_meta("finished", "Grading completed")

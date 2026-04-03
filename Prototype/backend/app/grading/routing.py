@@ -72,8 +72,30 @@ def detect_route_type(instructions_text: str) -> Tuple[str, str]:
     return "mcq", "Detected multiple-choice assessment keywords"
 
 
-def map_route_to_evaluator(route_type: str) -> str:
-    # Current implementation supports programming evaluator only.
+def detect_code_specialty(instructions_text: str) -> Tuple[str, str]:
+    """Infer a likely code language specialty for code-route assignments."""
+    text = (instructions_text or "").lower()
+
+    if re.search(r"\bc#\b|\bwinforms\b|\bwindows forms\b|\.cs\b", text):
+        return "csharp", "Detected C#/WinForms indicators"
+    if re.search(r"\bpython\b|\.py\b|\bpandas\b|\bnumpy\b", text):
+        return "python", "Detected Python indicators"
+    if re.search(r"\bjavascript\b|\bnode\b|\.js\b|\breact\b", text):
+        return "javascript", "Detected JavaScript indicators"
+    if re.search(r"\bsql\b|\bquery\b|\bselect\b|\bjoin\b", text):
+        return "sql", "Detected SQL indicators"
+
+    return "csharp", "No strong language indicator; defaulting to C# profile"
+
+
+def map_route_to_evaluator(route_type: str, code_specialty: str = "csharp") -> str:
+    # Non-code routes currently fall back to programming while specialized evaluators are added incrementally.
     if route_type == "code":
-        return "programming"
+        specialty_map = {
+            "csharp": "code-csharp",
+            "python": "code-python",
+            "javascript": "code-javascript",
+            "sql": "code-sql",
+        }
+        return specialty_map.get(code_specialty, "programming")
     return "programming"

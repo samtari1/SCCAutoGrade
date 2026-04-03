@@ -43,10 +43,6 @@ class AutoGrader:
         default_model = 'gemma3:12b' if self.use_custom_endpoint else 'gpt-5.4'
         self.model_name = (model_name or os.getenv('MODEL_NAME', default_model)).strip()
         self.custom_endpoint = custom_endpoint or os.getenv('CUSTOM_ENDPOINT', 'http://dryangai.ddns.net:11434')
-        self.exclude_generated_files = os.getenv('EXCLUDE_GENERATED_FILES', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
-        self.include_designer_for_grading = os.getenv('INCLUDE_DESIGNER_FOR_GRADING', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
-        self.hide_generated_in_reports = os.getenv('HIDE_GENERATED_IN_REPORTS', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
-        self.focus_report_on_issues = os.getenv('REPORT_FOCUS_ON_ISSUES', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
         self.openai_timeout = int(os.getenv('OPENAI_TIMEOUT_SECONDS', '240'))
         self.openai_max_retries = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
         self.openai_retry_backoff = float(os.getenv('OPENAI_RETRY_BACKOFF_SECONDS', '2.0'))
@@ -394,8 +390,6 @@ class AutoGrader:
             return True
         if lowered.endswith(('.g.cs', '.generated.cs', '.assemblyinfo.cs')):
             return True
-        if lowered.endswith('.designer.cs') and not self.include_designer_for_grading:
-            return True
         return False
 
     def _extract_csproj_compile_includes(self, csproj_files: List[str], root_dir: str) -> set:
@@ -436,7 +430,7 @@ class AutoGrader:
         if ext == '.cs':
             score += 50
             reasons.append('+50 source file (.cs)')
-            if file_name.endswith('.designer.cs') and self.include_designer_for_grading:
+            if file_name.endswith('.designer.cs'):
                 score += 15
                 reasons.append('+15 form designer definition file')
         elif ext in {'.csproj', '.sln'}:
@@ -516,17 +510,16 @@ class AutoGrader:
 
         selected_files = sorted({item[1] for item in selected_csharp})
 
-        # Include paired designer files when configured, so grading can validate event wiring.
-        if self.include_designer_for_grading:
-            selected_lookup = {os.path.basename(path).lower(): path for path in selected_files}
-            all_lookup = {os.path.basename(path).lower(): path for path in all_files}
-            for name in list(selected_lookup.keys()):
-                if not name.endswith('.cs') or name.endswith('.designer.cs'):
-                    continue
-                designer_name = f"{Path(name).stem}.designer.cs"
-                designer_path = all_lookup.get(designer_name)
-                if designer_path:
-                    selected_files.append(designer_path)
+        # If a form code-behind file is selected, include its paired designer file.
+        selected_lookup = {os.path.basename(path).lower(): path for path in selected_files}
+        all_lookup = {os.path.basename(path).lower(): path for path in all_files}
+        for name in list(selected_lookup.keys()):
+            if not name.endswith('.cs') or name.endswith('.designer.cs'):
+                continue
+            designer_name = f"{Path(name).stem}.designer.cs"
+            designer_path = all_lookup.get(designer_name)
+            if designer_path:
+                selected_files.append(designer_path)
 
         # Dependency closure: if selected files reference class names matching other C# filenames, include them.
         referenced_tokens = self._collect_referenced_file_names(selected_files)
@@ -583,35 +576,6 @@ class AutoGrader:
             print(f"  ⚠️  Could not write triage manifest: {manifest_error}")
 
         return selected_files, ignored
-
-    def _filter_generated_sections_for_report(self, code_text: str) -> Tuple[str, int]:
-        """Remove generated file sections from report display while keeping grading context intact."""
-        text = str(code_text or "")
-        if not text.strip() or not self.hide_generated_in_reports:
-            return text, 0
-
-        sections = re.split(r'(?=^//\s*File:\s*)', text, flags=re.MULTILINE)
-        kept = []
-        omitted = 0
-
-        for section in sections:
-            stripped = section.strip()
-            if not stripped:
-                continue
-
-            file_match = re.match(r'^//\s*File:\s*([^\n]+)', stripped)
-            if file_match:
-                file_name = file_match.group(1).strip().lower().replace('\\\\', '/').split('/')[-1]
-                if file_name.endswith('.designer.cs') or file_name.endswith('.g.cs') or file_name.endswith('.generated.cs'):
-                    omitted += 1
-                    continue
-
-            kept.append(stripped)
-
-        if not kept:
-            return text, 0
-
-        return '\n\n'.join(kept), omitted
     
     def find_csharp_in_directory(self, directory: str) -> str:
         """Recursively find and extract C# source content from a directory"""
@@ -822,7 +786,6 @@ CRITICAL GRADING RULES
 4. Be fair and slightly generous when intent and behavior are clearly correct.
 5. Grade ONLY these required parts: {graded_keys_list}
 6. Do not deduct for optional/stretch parts that are not implemented.
-7. If WinForms .Designer.cs content is present, verify event wiring correctness (e.g., button.Click handlers are wired and handler methods exist in code-behind).
 
 ════════════════════════════════════════════════════════
 RESPONSE FORMAT — return ONLY valid JSON, no extra text:
@@ -1408,16 +1371,10 @@ PART SCORES:
                 
                 # Show original and corrected code side by side
                 if 'original_code' in part_data:
-                    report_original_code, omitted_original_sections = self._filter_generated_sections_for_report(part_data['original_code'])
-                    report += f"\nOriginal Code:\n{'-' * 40}\n{report_original_code}\n"
-                    if omitted_original_sections:
-                        report += f"\n[Report view] Omitted {omitted_original_sections} generated file section(s) for readability (still considered during grading).\n"
+                    report += f"\nOriginal Code:\n{'-' * 40}\n{part_data['original_code']}\n"
                     
                     if 'corrected_code' in part_data and part_data['corrected_code'] != part_data['original_code']:
-                        report_corrected_code, omitted_corrected_sections = self._filter_generated_sections_for_report(part_data['corrected_code'])
-                        report += f"\nCorrected Code:\n{'-' * 40}\n{report_corrected_code}\n"
-                        if omitted_corrected_sections:
-                            report += f"\n[Report view] Omitted {omitted_corrected_sections} generated corrected section(s) for readability.\n"
+                        report += f"\nCorrected Code:\n{'-' * 40}\n{part_data['corrected_code']}\n"
                     else:
                         report += f"\nCode Status: Correct as submitted\n"
                 
@@ -1637,31 +1594,11 @@ PART SCORES:
             source_lines = code_text.splitlines()
             line_languages = infer_line_languages(code_text, language)
             pending_notes = [str(note).strip() for note in annotation_items if str(note).strip()]
-            hit_flags = []
-            for line in source_lines:
-                lowered = line.lower()
-                hit_flags.append(any(term in lowered for term in terms) if terms else False)
-
-            visible_line_indexes = list(range(len(source_lines)))
-            if self.focus_report_on_issues and any(hit_flags) and len(source_lines) > 40:
-                keep = set()
-                for idx, hit in enumerate(hit_flags):
-                    if hit:
-                        start = max(0, idx - 2)
-                        end = min(len(source_lines), idx + 3)
-                        for j in range(start, end):
-                            keep.add(j)
-                if keep:
-                    visible_line_indexes = sorted(keep)
 
             rows_html = []
-            previous_idx = -2
-            for idx in visible_line_indexes:
-                if idx - previous_idx > 1:
-                    rows_html.append('<div class="code-ellipsis">... omitted unimportant lines ...</div>')
-
-                line = source_lines[idx]
-                hit = hit_flags[idx]
+            for idx, line in enumerate(source_lines):
+                lowered = line.lower()
+                hit = any(term in lowered for term in terms) if terms else False
                 effective_language = line_languages[idx] if idx < len(line_languages) else language
                 line_type = classify_line(line, effective_language)
                 cls = "code-line"
@@ -1676,7 +1613,6 @@ PART SCORES:
                 rows_html.append(
                     f"<div class=\"code-row\"><div class=\"{cls}\">{esc(line)}</div>{line_note_html}</div>"
                 )
-                previous_idx = idx
 
             if pending_notes:
                 remaining = "".join(f"<li>{esc(note)}</li>" for note in pending_notes)
@@ -1720,8 +1656,7 @@ PART SCORES:
                 inline_notes_html = "".join(f"<li>{esc(note)}</li>" for note in inline_notes)
 
                 original_code_raw = part_data.get('original_code', '')
-                visible_code_raw, omitted_generated_sections = self._filter_generated_sections_for_report(original_code_raw)
-                detected_languages = infer_submission_languages(visible_code_raw)
+                detected_languages = infer_submission_languages(original_code_raw)
                 primary_language = detected_languages[0] if detected_languages else 'plain'
                 lang_labels = ", ".join(language_display_name(lang) for lang in detected_languages)
                 code_mode_label = "Code" if any(lang != 'plain' for lang in detected_languages) else "Text"
@@ -1733,11 +1668,7 @@ PART SCORES:
 
                 code_block_html = (
                     f"<div class=\"language-chip\">Detected {code_mode_label}: {esc(lang_labels)}</div>"
-                    f"<h4>Original Answer</h4>{render_code_with_highlights(visible_code_raw, issue_items, annotation_items, primary_language)}"
-                    + (
-                        f"<p class=\"report-note\">Report view hides {omitted_generated_sections} generated file section(s) for readability; grading still considered them.</p>"
-                        if omitted_generated_sections else ""
-                    )
+                    f"<h4>Original Answer</h4>{render_code_with_highlights(original_code_raw, issue_items, annotation_items, primary_language)}"
                 )
 
                 score_class = "part-score low" if score < 70 else "part-score"
@@ -1818,7 +1749,6 @@ PART SCORES:
         .issue-panel {{ background: #fef2f2; border-color: #fecaca; }}
         .strength-panel {{ background: #ecfdf5; border-color: #a7f3d0; }}
         .correction-panel {{ background: #f0fdf4; border-color: #bbf7d0; }}
-        .report-note {{ margin: 8px 0 0; color: #475569; font-size: 12px; }}
         pre {{ background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }}
         .expected-text {{ background: #f8fafc; color: #111827; border: 1px solid #e5e7eb; }}
         .language-chip {{ display: inline-block; margin: 4px 0 10px; padding: 4px 10px; border: 1px solid #bae6fd; background: #eff6ff; color: #1e3a8a; border-radius: 999px; font-size: 12px; font-weight: 700; }}
@@ -1826,7 +1756,6 @@ PART SCORES:
         .code-row {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 10px; align-items: start; }}
         .code-line {{ display: block; padding: 1px 8px; margin: 0 -8px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }}
         .line-note {{ background: #fef3c7; color: #7c2d12; border: 1px solid #f59e0b; border-radius: 8px; padding: 6px 8px; font-size: 12px; line-height: 1.35; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }}
-        .code-ellipsis {{ margin: 8px 0; color: #94a3b8; font-style: italic; font-size: 12px; }}
         .unmatched-notes {{ margin-top: 10px; background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 8px; padding: 8px 10px; }}
         .unmatched-notes ul {{ margin: 6px 0 0; padding-left: 18px; }}
         .issue-line {{ background: rgba(239, 68, 68, 0.22); border-left: 3px solid #ef4444; }}

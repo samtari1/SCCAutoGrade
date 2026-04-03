@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
@@ -16,7 +16,12 @@ function App() {
   const [routingReason, setRoutingReason] = useState("");
   const [confidence, setConfidence] = useState(null);
   const [streamLines, setStreamLines] = useState([]);
+  const [autoScrollStream, setAutoScrollStream] = useState(true);
+  const [multiAgentGrading, setMultiAgentGrading] = useState(true);
+  const [disagreementThreshold, setDisagreementThreshold] = useState("5.0");
+  const [partDisagreementThreshold, setPartDisagreementThreshold] = useState("10.0");
   const [availableEvaluators, setAvailableEvaluators] = useState([]);
+  const streamPanelRef = useRef(null);
 
   useEffect(() => {
     const loadEvaluators = async () => {
@@ -105,6 +110,13 @@ function App() {
     return () => stream.close();
   }, [jobId]);
 
+  useEffect(() => {
+    if (!autoScrollStream || !streamPanelRef.current) {
+      return;
+    }
+    streamPanelRef.current.scrollTop = streamPanelRef.current.scrollHeight;
+  }, [streamLines, autoScrollStream]);
+
   async function submitJob(event) {
     event.preventDefault();
     setError("");
@@ -120,6 +132,9 @@ function App() {
     form.append("main_zip", mainZip);
     form.append("instructions_html", instructionsHtml);
     form.append("evaluator_key", evaluatorKey);
+    form.append("multi_agent_grading", String(multiAgentGrading));
+    form.append("multi_agent_disagreement_threshold", disagreementThreshold || "5.0");
+    form.append("multi_agent_part_disagreement_threshold", partDisagreementThreshold || "10.0");
 
     try {
       const res = await fetch(`${API_BASE}/api/jobs`, {
@@ -173,6 +188,43 @@ function App() {
             </select>
           </label>
 
+          <fieldset className="options-grid">
+            <legend>Multi-Agent Grading (Advanced)</legend>
+
+            <label className="inline-checkbox">
+              <input
+                type="checkbox"
+                checked={multiAgentGrading}
+                onChange={(e) => setMultiAgentGrading(e.target.checked)}
+              />
+              Enable grader + reviewer + resolver
+            </label>
+
+            <label>
+              Final score disagreement threshold
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={disagreementThreshold}
+                onChange={(e) => setDisagreementThreshold(e.target.value)}
+                disabled={!multiAgentGrading}
+              />
+            </label>
+
+            <label>
+              Per-part disagreement threshold
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={partDisagreementThreshold}
+                onChange={(e) => setPartDisagreementThreshold(e.target.value)}
+                disabled={!multiAgentGrading}
+              />
+            </label>
+          </fieldset>
+
           <button type="submit" disabled={!canSubmit || status === "submitting"}>
             {status === "submitting" ? "Submitting..." : "Start Grading Job"}
           </button>
@@ -210,8 +262,18 @@ function App() {
           </>
         )}
 
-        <h3>Live Grading Stream</h3>
-        <pre className="stream-panel">
+        <div className="stream-header">
+          <h3>Live Grading Stream</h3>
+          <label className="stream-switch">
+            <input
+              type="checkbox"
+              checked={autoScrollStream}
+              onChange={(e) => setAutoScrollStream(e.target.checked)}
+            />
+            Auto-scroll to latest
+          </label>
+        </div>
+        <pre className="stream-panel" ref={streamPanelRef}>
           {streamLines.length ? streamLines.join("\n") : "Waiting for grading output..."}
         </pre>
       </section>

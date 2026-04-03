@@ -1,35 +1,42 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List
 
+from ..adapters.autograde_adapter import AutoGradeAdapter, AutoGradeRunConfig
 from ..contracts import BaseEvaluator, ConfidenceReport, GradingRequest, GradingResult, QuestionType
 
 
 class ProgrammingEvaluator(BaseEvaluator):
-    key = "programming"
     supported_types = [QuestionType.CODE, QuestionType.COMPOSITE]
 
-    def grade(self, request: GradingRequest) -> GradingResult:
-        # Import lazily to keep startup fast and isolate grader dependencies.
-        from AutoGrade import AutoGrader  # pylint: disable=import-outside-toplevel
+    def __init__(self, key: str = "programming", language_hint: str = "csharp") -> None:
+        self.key = key
+        self.language_hint = language_hint
 
-        grader = AutoGrader()
-        grader.grade_all_assignments(
-            str(request.submission_archive_path),
-            str(request.instructions_path),
-            str(request.output_dir),
+    def grade(self, request: GradingRequest) -> GradingResult:
+        metadata = request.metadata or {}
+        language_hint = str(metadata.get("code_specialty") or self.language_hint)
+        adapter = AutoGradeAdapter(
+            AutoGradeRunConfig(
+                evaluator_key=self.key,
+                route_type="code",
+                language_hint=language_hint,
+            )
+        )
+        run_output = adapter.run(
+            submission_archive_path=request.submission_archive_path,
+            instructions_path=request.instructions_path,
+            output_dir=request.output_dir,
+            metadata=metadata,
         )
 
-        artifacts: List[str] = sorted([p.name for p in Path(request.output_dir).glob("*") if p.is_file()])
+        artifacts: List[str] = run_output.get("artifact_files", [])
+        confidence_data = run_output.get("confidence", {})
 
         confidence = ConfidenceReport(
-            value=0.85,
-            source="heuristic",
-            reasons=[
-                "Programming evaluator runs deterministic file extraction and structure checks.",
-                "Final rubric grading currently uses LLM reasoning for part-level assessment.",
-            ],
+            value=float(confidence_data.get("value", 0.85)),
+            source=str(confidence_data.get("source", "heuristic")),
+            reasons=[str(item) for item in confidence_data.get("reasons", [])],
         )
 
         return GradingResult(

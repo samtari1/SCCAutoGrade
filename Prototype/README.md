@@ -76,6 +76,6 @@ When `evaluator_key=auto`, the backend infers `route_type` (code/essay/numeric/m
 
 ## Notes
 
-- The backend reuses `AutoGrade.py` to avoid rewriting grading logic.
+- Grading logic is now hosted under `backend/app/grading/legacy/autograder_core.py` and invoked through backend adapters/evaluators.
 - Existing `.env` values from root are used by the grader (provider/model/api key settings).
 - Job outputs are stored under `backend/data/jobs/<job_id>/output`.
