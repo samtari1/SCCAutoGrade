@@ -31,7 +31,7 @@ Create or update `.env` in this folder:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 MODEL_PROVIDER=openai
-MODEL_NAME=gpt-5.4
+MODEL_NAME=gpt-5-nano
 OPENAI_TIMEOUT_SECONDS=240
 INSTRUCTIONS_FILE=Lab Assignment.html
 SUBMISSION_FILE=CreateViews.sql
