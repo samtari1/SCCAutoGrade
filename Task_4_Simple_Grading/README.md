@@ -46,6 +46,25 @@ From this folder:
 python AutoGrade.py
 ```
 
+## Batch Run (All Submissions)
+
+To grade every `.sql` file in `MoreSubmissions` in a loop, run this from `Task_4_Simple_Grading`:
+
+```bash
+mkdir -p results
+
+for file in MoreSubmissions/*.sql; do
+	base="$(basename "$file" .sql)"
+	SUBMISSION_FILE="$file" \
+	GRADING_OUTPUT_FILE="results/${base}_grading_result.json" \
+	python AutoGrade.py
+done
+```
+
+This will create one JSON output per student in `results/`.
+
+Note: the folder name is `MoreSubmissions`.
+
 ## Output
 
 The script prints the grading JSON and writes it to:
