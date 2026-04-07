@@ -1,0 +1,152 @@
+<h1>Lab Assignment: Creating Views</h1>
+
+<p><strong style="font-size: 0.9375rem;">Topic:</strong><span style="font-size: 0.9375rem;"> Views – Creation, Benefits, and Security</span></p>
+
+<div class="note">
+    <strong>Important:</strong> Before starting this lab, please first create the <em>university</em> database by running the setup SQL below:
+    <pre><code>-- 1. Create database
+CREATE DATABASE IF NOT EXISTS university;
+USE university;
+
+-- 2. Create tables
+
+-- Students table
+CREATE TABLE students (
+    student_id INT PRIMARY KEY AUTO_INCREMENT,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    major VARCHAR(50),
+    gpa DECIMAL(3,2)
+);
+
+-- Courses table
+CREATE TABLE courses (
+    course_id INT PRIMARY KEY AUTO_INCREMENT,
+    course_name VARCHAR(100),
+    credits INT
+);
+
+-- Professors table
+CREATE TABLE professors (
+    professor_id INT PRIMARY KEY AUTO_INCREMENT,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    department VARCHAR(50)
+);
+
+-- Enrollments table (relationship between students and courses)
+CREATE TABLE enrollments (
+    enrollment_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT,
+    course_id INT,
+    grade DECIMAL(5,2),
+    FOREIGN KEY (student_id) REFERENCES students(student_id),
+    FOREIGN KEY (course_id) REFERENCES courses(course_id)
+);
+
+
+-- Students
+INSERT INTO students (first_name, last_name, major, gpa) VALUES
+('Alice', 'Wang', 'Computer Science', 3.9),
+('Bob', 'Smith', 'Mathematics', 3.5),
+('Charlie', 'Brown', 'Computer Science', 3.7),
+('David', 'Lee', 'Physics', 3.2),
+('Eva', 'Chen', 'Mathematics', 3.8),
+('Frank', 'Moore', 'Computer Science', 3.6),
+('Grace', 'Taylor', 'Physics', 3.1),
+('Hannah', 'Johnson', 'Mathematics', 3.4),
+('Ian', 'Davis', 'Computer Science', 3.95),
+('Julia', 'Wilson', 'Physics', 3.3);
+
+-- Courses
+INSERT INTO courses (course_name, credits) VALUES
+('Intro to Programming', 3),
+('Data Structures', 4),
+('Calculus I', 4),
+('Linear Algebra', 3),
+('Physics I', 4),
+('Algorithms', 4),
+('Database Systems', 3),
+('Operating Systems', 4);
+
+-- Professors
+INSERT INTO professors (first_name, last_name, department) VALUES
+('Dr. Alan', 'Turing', 'Computer Science'),
+('Dr. Emmy', 'Noether', 'Mathematics'),
+('Dr. Richard', 'Feynman', 'Physics'),
+('Dr. Ada', 'Lovelace', 'Computer Science');
+
+-- Enrollments
+INSERT INTO enrollments (student_id, course_id, grade) VALUES
+(1, 1, 95.0), (1, 2, 90.0), (1, 7, 88.0),
+(2, 3, 85.0), (2, 4, 92.0), (2, 6, 80.0),
+(3, 1, 87.0), (3, 2, 85.0), (3, 7, 90.0),
+(4, 5, 78.0), (4, 3, 82.0),
+(5, 3, 88.0), (5, 4, 90.0),
+(6, 1, 92.0), (6, 2, 89.0),
+(7, 5, 75.0), (7, 6, 80.0),
+(8, 3, 83.0), (8, 4, 87.0),
+(9, 1, 96.0), (9, 2, 94.0),
+(10, 5, 80.0), (10, 6, 85.0);</code></pre>
+</div>
+<div class="note"><br></div>
+
+<h2>Objectives</h2>
+<ul>
+    <li>Understand the benefits of using views in MySQL.</li>
+    <li>Create views from single or multiple tables.</li>
+    <li>Use column aliases, aggregate functions, and the LIMIT clause in views.</li>
+    <li>Apply views to enhance database security by restricting access to specific columns or rows.</li>
+    <li>Query data from views and combine views with other SQL operations.</li>
+</ul>
+
+<h2>Lab Instructions</h2>
+
+<h3><span style="font-size: 1.64062rem;">Part 1: Simple View</span></h3>
+<div class="exercise">
+    <p>Create a view that shows only <code>student_id</code> and <code>first_name</code> from the <code>students</code> table. Query the view to display all records.</p>
+</div>
+
+<div class="exercise">
+    <h3>Part 2: View with JOIN</h3>
+    <p>Create a view that shows <code>student_name</code>, <code>course_name</code>, and <code>grade</code> by joining <code>students</code> and <code>enrollments</code> tables (and optionally <code>courses</code> if needed). Query the view to see all records.</p>
+</div>
+
+<div class="exercise">
+    <h3>Part 3: Aggregate View</h3>
+    <p>Create a view showing each student's average grade across all courses. Use aggregate functions and GROUP BY. Query the view and sort by average grade descending.</p>
+</div>
+
+<div class="exercise">
+    <h3>Part 4: Security with Views</h3>
+    <p>Create a view that shows student names and majors but hides grades. Grant SELECT privileges on this view to a user <code>report_user</code>. Verify that <code>report_user</code> cannot access the hidden columns.</p>
+</div>
+
+<div class="exercise">
+    <h3>Part 5: Advanced View</h3>
+    <p>Create a view showing the top 5 students in "Computer Science" by average grade. Include student name, major, and average grade. Query the view to verify the results.</p>
+</div>
+
+<div class="exercise">
+    <h3>Part 6: Combined View Usage</h3>
+    <p>Create a view that contains the GPA column and write a Select statement to query on the view to filter students with GPA greater than 3.5 and order them by last name.</p>
+</div>
+
+<h2></h2>
+<h3>Part 7: Short-Answer Questions</h3>
+<ol>
+    <li>What are the main benefits of using views in MySQL?</li>
+    <li>How do views improve database security?</li>
+    <li>How does a view help hide table structure changes from users?</li>
+    <li>Why might you use an aggregate function in a view?</li>
+    <li>Explain the difference between querying a table directly and querying through a view.</li>
+</ol>
+
+<h2>Submission Instructions</h2>
+<ul>
+    <li>Submit a SQL script containing all the views you created</li>
+    <li>Clearly separate different parts as individual sections in the SQL script</li>
+    <li>Name the SQL script file as "FirstName_LastName_CreateViews.sql"</li>
+    <li>Include screenshots of query results for each exercise.</li>
+    <li>Answer the questions in the same SQL file.</li>
+</ul>

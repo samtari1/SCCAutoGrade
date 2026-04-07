@@ -1,0 +1,39 @@
+{
+  "final_score": 58,
+  "summary": "The submission covers all required parts and includes short-answer responses, but several SQL issues prevent full correctness. The most serious problems are incorrect JOIN conditions in Parts 2, 3, and 5, an invalid non-SQL text line in Part 4, incomplete/incorrect GRANT syntax, missing required query for Part 1, and a Part 6 view that does not match the assignment requirements.",
+  "issues": [
+    "Part 1 creates the simple view correctly, but it does not include the required query to display all records from the view.",
+    "Part 2 uses incorrect JOIN conditions: students is joined to enrollments with s.student_id = e.enrollment_id instead of s.student_id = e.student_id.",
+    "Part 2 also joins courses incorrectly with s.student_id = c.course_id instead of e.course_id = c.course_id.",
+    "Part 2 may produce incorrect or misleading results because unqualified first_name and last_name should be referenced as s.first_name and s.last_name for clarity.",
+    "Part 3 uses the wrong JOIN condition again: s.student_id = e.enrollment_id instead of s.student_id = e.student_id.",
+    "Part 3 groups by the alias student_name; while MySQL may allow it, grouping by the underlying expression or student_id is more reliable and clearer.",
+    "Part 4 contains plain text not commented out: 'report_user' can only see the name and major of a student, not grades or any other columns. This makes the script invalid SQL.",
+    "Part 4 GRANT syntax is incomplete for MySQL because it does not specify the database/object fully or the host, such as TO 'report_user'@'localhost'.",
+    "Part 4 does not include any SQL verification step showing that report_user cannot access hidden columns.",
+    "Part 5 uses the wrong JOIN condition again: s.student_id = e.enrollment_id instead of s.student_id = e.student_id.",
+    "Part 5 orders by avg_grade ascending, but top 5 students should be ordered descending.",
+    "Part 5 includes ORDER BY and LIMIT inside the view definition; although MySQL can allow this in some cases, it is better practice to query the view with ORDER BY/LIMIT unless specifically required.",
+    "Part 6 does not match the assignment: the view should contain the GPA column and then a separate SELECT should filter GPA > 3.5 and order by last name.",
+    "Part 6 unnecessarily joins enrollments and calculates AVG(grade), which is unrelated to the stated GPA-based requirement.",
+    "Part 6 filters and orders inside the view instead of in the separate SELECT statement requested by the assignment.",
+    "The script does not clearly show use of USE university; if run outside the correct database context, unqualified CREATE VIEW statements may fail or be created in the wrong schema.",
+    "Submission requirements mention clearly separated sections and screenshots; screenshots cannot be assessed from SQL alone, and the file naming requirement cannot be verified here."
+  ],
+  "suggested_fixes": [
+    "Add a SELECT * FROM simple_view; statement after creating the Part 1 view.",
+    "Fix Part 2 joins to use students.student_id = enrollments.student_id and enrollments.course_id = courses.course_id.",
+    "Qualify student columns with the students alias in Part 2 and other joined queries for clarity.",
+    "Fix Part 3 join to students.student_id = enrollments.student_id.",
+    "In Part 3, group by student_id and student name expression to make the aggregate view more robust.",
+    "Comment out explanatory text in Part 4 using -- or /* */ so the script remains valid SQL.",
+    "Use proper GRANT syntax, for example: GRANT SELECT ON university.student_public_info_view TO 'report_user'@'localhost';",
+    "If required, create the user first with CREATE USER IF NOT EXISTS 'report_user'@'localhost' IDENTIFIED BY 'password';",
+    "Add a verification example for Part 4, such as a commented note or example login/test query showing access to the view and denial on base tables or hidden columns.",
+    "Fix Part 5 join to students.student_id = enrollments.student_id.",
+    "Change Part 5 ordering to ORDER BY avg_grade DESC so it truly shows the top 5 students.",
+    "For Part 6, create a simple GPA-focused view from students only, then run a separate SELECT filtering GPA > 3.5 and ordering by last_name.",
+    "Include USE university; at the top of the script or fully qualify all object names consistently."
+  ],
+  "corrected_sql": "USE university;\n\n-- Part 1: Simple View\nCREATE OR REPLACE VIEW simple_view AS\nSELECT student_id, first_name\nFROM students;\n\nSELECT * FROM simple_view;\n\n-- Part 2: View with JOIN\nCREATE OR REPLACE VIEW join_view AS\nSELECT CONCAT(s.first_name, ' ', s.last_name) AS student_name,\n       c.course_name,\n       e.grade\nFROM students s\nJOIN enrollments e ON s.student_id = e.student_id\nJOIN courses c ON e.course_id = c.course_id;\n\nSELECT * FROM join_view;\n\n-- Part 3: Aggregate View\nCREATE OR REPLACE VIEW aggregate_view AS\nSELECT s.student_id,\n       CONCAT(s.first_name, ' ', s.last_name) AS student_name,\n       AVG(e.grade) AS grade_avg\nFROM students s\nJOIN enrollments e ON s.student_id = e.student_id\nGROUP BY s.student_id, s.first_name, s.last_name;\n\nSELECT * FROM aggregate_view\nORDER BY grade_avg DESC;\n\n-- Part 4: Security with Views\nCREATE OR REPLACE VIEW student_public_info_view AS\nSELECT CONCAT(first_name, ' ', last_name) AS student_name,\n       major\nFROM students;\n\nCREATE USER IF NOT EXISTS 'report_user'@'localhost' IDENTIFIED BY 'password';\nGRANT SELECT ON university.student_public_info_view TO 'report_user'@'localhost';\nFLUSH PRIVILEGES;\n\n-- Verification examples for report_user:\n-- As report_user, this should work:\n-- SELECT * FROM university.student_public_info_view;\n-- As report_user, direct access to hidden grade data should fail if no privileges were granted:\n-- SELECT grade FROM university.enrollments;\n\n-- Part 5: Advanced View\nCREATE OR REPLACE VIEW advanced_view AS\nSELECT CONCAT(s.first_name, ' ', s.last_name) AS student_name,\n       s.major,\n       AVG(e.grade) AS avg_grade\nFROM students s\nJOIN enrollments e ON s.student_id = e.student_id\nWHERE s.major = 'Computer Science'\nGROUP BY s.student_id, s.first_name, s.last_name, s.major\nORDER BY avg_grade DESC\nLIMIT 5;\n\nSELECT * FROM advanced_view;\n\n-- Part 6: Combined View Usage\nCREATE OR REPLACE VIEW combined_view AS\nSELECT student_id,\n       first_name,\n       last_name,\n       gpa\nFROM students;\n\nSELECT *\nFROM combined_view\nWHERE gpa > 3.5\nORDER BY last_name;\n\n-- Part 7: Short Answer Questions\n-- 1. What are the main benefits of using views in MySQL?\n-- Views simplify complex queries, improve security by exposing only selected data,\n-- provide abstraction from base tables, and improve code reuse/readability.\n\n-- 2. How do views improve database security?\n-- Views improve security by allowing users to access only specific columns or rows\n-- without giving them direct access to the underlying tables.\n\n-- 3. How does a view help hide table structure changes from users?\n-- A view acts as an abstraction layer, so changes to underlying tables can often be\n-- hidden if the view definition continues to present the same interface.\n\n-- 4. Why might you use an aggregate function in a view?\n-- Aggregate functions in views help summarize data, such as averages, totals,\n-- counts, or maximum/minimum values, for easier reporting.\n\n-- 5. Explain the difference between querying a table directly and querying through a view.\n-- Querying a table directly accesses raw stored data, while querying through a view\n-- accesses a predefined query result that can simplify logic and restrict access."
+}
