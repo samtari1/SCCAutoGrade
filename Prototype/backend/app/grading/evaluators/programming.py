@@ -15,7 +15,12 @@ class ProgrammingEvaluator(BaseEvaluator):
 
     def grade(self, request: GradingRequest) -> GradingResult:
         metadata = request.metadata or {}
-        language_hint = str(metadata.get("code_specialty") or self.language_hint)
+        if self.key == "programming":
+            language_hint = str(metadata.get("code_specialty") or self.language_hint)
+        else:
+            # Specialized evaluators (code-sql, code-python, etc.) should honor
+            # their own language target even when route metadata is noisy.
+            language_hint = self.language_hint
         adapter = AutoGradeAdapter(
             AutoGradeRunConfig(
                 evaluator_key=self.key,

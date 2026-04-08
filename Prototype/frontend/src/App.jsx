@@ -16,10 +16,14 @@ function App() {
   const [routingReason, setRoutingReason] = useState("");
   const [confidence, setConfidence] = useState(null);
   const [streamLines, setStreamLines] = useState([]);
+  const [streamConnected, setStreamConnected] = useState(false);
   const [autoScrollStream, setAutoScrollStream] = useState(true);
   const [multiAgentGrading, setMultiAgentGrading] = useState(true);
   const [disagreementThreshold, setDisagreementThreshold] = useState("5.0");
   const [partDisagreementThreshold, setPartDisagreementThreshold] = useState("10.0");
+  const [gradingContext, setGradingContext] = useState(
+    "In the overall feedback, try to make it conversational and friendly. Try to acknowledge the strengths before pointing out the weaknesses. When pointing out the weaknesses don't be too harsh."
+  );
   const [availableEvaluators, setAvailableEvaluators] = useState([]);
   const streamPanelRef = useRef(null);
 
@@ -43,7 +47,7 @@ function App() {
   const canSubmit = useMemo(() => Boolean(mainZip && instructionsHtml), [mainZip, instructionsHtml]);
 
   useEffect(() => {
-    if (!jobId || status === "finished" || status === "failed") {
+    if (!jobId || status === "finished" || status === "failed" || streamConnected) {
       return;
     }
 
@@ -66,7 +70,7 @@ function App() {
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [jobId, status]);
+  }, [jobId, status, streamConnected]);
 
   useEffect(() => {
     if (!jobId) {
@@ -74,6 +78,10 @@ function App() {
     }
 
     const stream = new EventSource(`${API_BASE}/api/jobs/${jobId}/stream`);
+
+    stream.onopen = () => {
+      setStreamConnected(true);
+    };
 
     stream.addEventListener("log", (event) => {
       setStreamLines((prev) => {
@@ -104,10 +112,15 @@ function App() {
     });
 
     stream.onerror = () => {
-      stream.close();
+      setStreamConnected(false);
+      // Do not close manually; EventSource will auto-reconnect.
+      setError((prev) => prev || "Live stream disconnected temporarily. Retrying...");
     };
 
-    return () => stream.close();
+    return () => {
+      setStreamConnected(false);
+      stream.close();
+    };
   }, [jobId]);
 
   useEffect(() => {
@@ -135,6 +148,7 @@ function App() {
     form.append("multi_agent_grading", String(multiAgentGrading));
     form.append("multi_agent_disagreement_threshold", disagreementThreshold || "5.0");
     form.append("multi_agent_part_disagreement_threshold", partDisagreementThreshold || "10.0");
+    form.append("grading_context", gradingContext);
 
     try {
       const res = await fetch(`${API_BASE}/api/jobs`, {
@@ -224,6 +238,16 @@ function App() {
               />
             </label>
           </fieldset>
+
+          <label>
+            Instructor Notes / Grading Context (optional)
+            <textarea
+              rows={5}
+              placeholder="Example: This week, grade only weekly progress reports. No code required. If a submission is a proposal, evaluate whether it aligns with final project requirements."
+              value={gradingContext}
+              onChange={(e) => setGradingContext(e.target.value)}
+            />
+          </label>
 
           <button type="submit" disabled={!canSubmit || status === "submitting"}>
             {status === "submitting" ? "Submitting..." : "Start Grading Job"}

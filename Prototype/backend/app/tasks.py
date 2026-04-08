@@ -10,6 +10,24 @@ from .grading import register_default_evaluators
 from .grading.service import run_grading_pipeline
 
 
+class _AutoFlushWriter:
+    """Proxy writer that flushes on every write for real-time stream logs."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, data):
+        written = self._wrapped.write(data)
+        self._wrapped.flush()
+        return written
+
+    def flush(self):
+        self._wrapped.flush()
+
+    def isatty(self):
+        return False
+
+
 def _update_job_meta(status: str, message: str = "") -> None:
     job = get_current_job()
     if not job:
@@ -32,6 +50,7 @@ def run_grading_job(
     multi_agent_grading: bool = True,
     multi_agent_disagreement_threshold: float = 5.0,
     multi_agent_part_disagreement_threshold: float = 10.0,
+    grading_context: str = "",
 ) -> Dict[str, Any]:
     """RQ task that runs backend grading pipeline for one grading run."""
     _update_job_meta("started", "Preparing grading run")
@@ -42,12 +61,13 @@ def run_grading_job(
     stream_log_path = Path(output_dir).parent / "stream.log"
     stream_log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with stream_log_path.open("a", encoding="utf-8") as stream_log:
+    with stream_log_path.open("a", encoding="utf-8", buffering=1) as stream_log:
         stream_log.write(
             f"[router] evaluator={evaluator_key}, route_type={route_type}, reason={routing_reason}\n"
         )
         stream_log.flush()
-        with redirect_stdout(stream_log), redirect_stderr(stream_log):
+        live_stream = _AutoFlushWriter(stream_log)
+        with redirect_stdout(live_stream), redirect_stderr(live_stream):
             result = run_grading_pipeline(
                 job_id=job_id,
                 evaluator_key=evaluator_key,
@@ -59,6 +79,7 @@ def run_grading_job(
                     "multi_agent_grading": multi_agent_grading,
                     "multi_agent_disagreement_threshold": multi_agent_disagreement_threshold,
                     "multi_agent_part_disagreement_threshold": multi_agent_part_disagreement_threshold,
+                    "grading_context": grading_context,
                 },
             )
 

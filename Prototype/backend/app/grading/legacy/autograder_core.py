@@ -19,8 +19,10 @@ from datetime import datetime
 from dotenv import load_dotenv
 import requests
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from explicit .env locations.
+ROOT_DIR = Path(__file__).resolve().parents[5]
+load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR / "backend" / ".env", override=True)
 
 class AutoGrader:
     def __init__(
@@ -47,6 +49,8 @@ class AutoGrader:
         self.openai_max_retries = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
         self.openai_retry_backoff = float(os.getenv('OPENAI_RETRY_BACKOFF_SECONDS', '2.0'))
         self.openai_stream = os.getenv('OPENAI_STREAM', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
+        self.language_hint = os.getenv('CODE_SPECIALTY', 'csharp').strip().lower()
+        self.grading_context = ""
         
         if not self.use_custom_endpoint:
             # OpenAI setup
@@ -89,6 +93,192 @@ class AutoGrader:
         
         # Default equal weights for parts (will be adjusted based on assignment)
         self.part_weights = {}
+
+    def _supported_reasoning_efforts(self) -> set:
+        """Return supported reasoning effort values for the active model."""
+        model = (self.model_name or "").strip().lower()
+        # gpt-5.4-pro rejects "low" and accepts medium/high/xhigh.
+        if "gpt-5.4-pro" in model:
+            return {"medium", "high", "xhigh"}
+        return {"low", "medium", "high", "xhigh"}
+
+    def _resolve_reasoning_effort(self) -> str:
+        """Choose a valid reasoning effort for the configured model."""
+        requested = os.getenv("OPENAI_REASONING_EFFORT", "low").strip().lower()
+        if requested not in {"low", "medium", "high", "xhigh"}:
+            requested = "low"
+
+        supported = self._supported_reasoning_efforts()
+        if requested in supported:
+            return requested
+
+        # Prefer medium when low is unsupported.
+        if "medium" in supported:
+            return "medium"
+        return sorted(supported)[0]
+
+    def _normalized_language_hint(self) -> str:
+        lang = (getattr(self, 'language_hint', 'csharp') or 'csharp').strip().lower()
+        if lang in {'cs', 'c#', 'csharp'}:
+            return 'csharp'
+        if lang in {'js', 'javascript', 'node'}:
+            return 'javascript'
+        if lang in {'py', 'python'}:
+            return 'python'
+        if lang in {'sql'}:
+            return 'sql'
+        return lang
+
+    def _target_extensions(self) -> Tuple[str, ...]:
+        lang = self._normalized_language_hint()
+        mapping = {
+            'csharp': ('.cs',),
+            'python': ('.py',),
+            'javascript': ('.js', '.jsx', '.ts', '.tsx'),
+            'sql': ('.sql',),
+        }
+        return mapping.get(lang, ('.cs',))
+
+    def _language_display_name(self) -> str:
+        names = {
+            'csharp': 'C#',
+            'python': 'Python',
+            'javascript': 'JavaScript',
+            'sql': 'SQL',
+        }
+        return names.get(self._normalized_language_hint(), self._normalized_language_hint().upper())
+
+    def _file_marker_prefix(self) -> str:
+        return '-- File:' if self._normalized_language_hint() == 'sql' else '// File:'
+
+    def _combine_source_files(self, base_dir: str, file_paths: List[str]) -> str:
+        marker = self._file_marker_prefix()
+        blocks = []
+        for file_path in sorted(set(file_paths)):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read().strip()
+                if content:
+                    relative_path = os.path.relpath(file_path, base_dir)
+                    blocks.append(f"{marker} {relative_path}\n{content}")
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+        return "\n\n".join(blocks)
+
+    def _extract_docx_text(self, file_path: str) -> str:
+        """Extract readable text from a .docx file using stdlib zip/xml parsing."""
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                xml = zf.read('word/document.xml').decode('utf-8', errors='ignore')
+            xml = re.sub(r'</w:p>', '\n', xml)
+            xml = re.sub(r'<[^>]+>', '', xml)
+            text = html.unescape(xml)
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            return '\n'.join(lines)
+        except Exception:
+            return ""
+
+    def _collect_report_documents(self, directory: str) -> str:
+        """Collect weekly report style artifacts when code files are not present."""
+        report_exts = {'.txt', '.md', '.docx', '.pdf', '.pptx', '.html', '.htm'}
+        marker = self._file_marker_prefix()
+        blocks = []
+
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+            for file in files:
+                ext = Path(file).suffix.lower()
+                if ext not in report_exts:
+                    continue
+
+                file_path = os.path.join(root, file)
+                rel = os.path.relpath(file_path, directory)
+                text = ""
+
+                try:
+                    if ext in {'.txt', '.md', '.html', '.htm'}:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            text = f.read().strip()
+                    elif ext == '.docx':
+                        text = self._extract_docx_text(file_path).strip()
+                    elif ext in {'.pdf', '.pptx'}:
+                        text = f"[{ext[1:].upper()} file attached: {rel}]"
+                except Exception:
+                    text = ""
+
+                if text:
+                    blocks.append(f"{marker} {rel}\n{text}")
+
+        return "\n\n".join(blocks)
+
+    def _extract_submission_from_nested_structure(self, zip_path: str) -> str:
+        temp_dir = tempfile.mkdtemp()
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            return self.find_submission_in_directory(temp_dir)
+        except Exception as e:
+            print(f"Error extracting from {zip_path}: {e}")
+            return ""
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _extract_submission_from_7z_structure(self, archive_path: str) -> str:
+        temp_dir = tempfile.mkdtemp()
+        try:
+            try:
+                import py7zr
+                with py7zr.SevenZipFile(archive_path, mode='r') as archive:
+                    archive.extractall(path=temp_dir)
+                return self.find_submission_in_directory(temp_dir)
+            except ImportError:
+                print(f"Warning: py7zr library not installed. Cannot extract 7z file: {archive_path}")
+                return ""
+            except Exception as e:
+                print(f"Error extracting 7z file {archive_path}: {e}")
+                return ""
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def find_submission_in_directory(self, directory: str) -> str:
+        """Find submission files for the configured language hint."""
+        if self._normalized_language_hint() == 'csharp':
+            return self.find_csharp_in_directory(directory)
+
+        target_exts = self._target_extensions()
+        matched_files = []
+
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+
+            for file in files:
+                file_path = os.path.join(root, file)
+                if Path(file).suffix.lower() in target_exts:
+                    matched_files.append(file_path)
+
+            if not matched_files:
+                for file in files:
+                    lowered = file.lower()
+                    if lowered.endswith('.zip'):
+                        content = self._extract_submission_from_nested_structure(os.path.join(root, file))
+                        if content:
+                            return self._append_screenshot_note(content, directory)
+                    elif lowered.endswith('.7z'):
+                        content = self._extract_submission_from_7z_structure(os.path.join(root, file))
+                        if content:
+                            return self._append_screenshot_note(content, directory)
+
+        if not matched_files:
+            # Weekly reports can be text/docx/pdf/pptx without SQL/code files.
+            report_text = self._collect_report_documents(directory)
+            if report_text:
+                print(f"  ℹ️  Falling back to weekly report documents in: {os.path.basename(directory)}")
+                return self._append_screenshot_note(report_text, directory)
+            return ""
+
+        return self._append_screenshot_note(
+            self._combine_source_files(directory, matched_files), directory
+        )
     
     def test_custom_endpoint(self) -> bool:
         """Test if custom endpoint is accessible"""
@@ -234,9 +424,9 @@ class AutoGrader:
                 continue
 
             if student_entry.is_dir():
-                # Student folder: extract any archives inside it in-place, then find C# code
+                # Student folder: extract any archives inside it in-place, then find source files
                 self.ensure_archives_extracted(student_entry)
-                submission_content = self.find_csharp_in_directory(str(student_entry))
+                submission_content = self.find_submission_in_directory(str(student_entry))
 
             elif student_entry.suffix.lower() == '.zip':
                 # Bare zip at top level — extract in-place next to the zip
@@ -252,7 +442,7 @@ class AutoGrader:
                         inner_dir.rmdir()
                         continue
                 self.ensure_archives_extracted(inner_dir)
-                submission_content = self.find_csharp_in_directory(str(inner_dir))
+                submission_content = self.find_submission_in_directory(str(inner_dir))
 
             elif student_entry.suffix.lower() == '.7z':
                 inner_dir = student_entry.parent / student_entry.stem
@@ -270,7 +460,7 @@ class AutoGrader:
                         print(f"  ⚠️  Failed to extract {student_entry.name}: {e}")
                         continue
                 self.ensure_archives_extracted(inner_dir)
-                submission_content = self.find_csharp_in_directory(str(inner_dir))
+                submission_content = self.find_submission_in_directory(str(inner_dir))
 
             else:
                 continue  # Not a folder or archive — skip
@@ -278,9 +468,9 @@ class AutoGrader:
             if submission_content and student_name:
                 assignments[student_name] = submission_content
                 processed_students.add(normalized_name)
-                print(f"  ✓ Found C# code for: {student_name}")
+                print(f"  ✓ Found {self._language_display_name()} submission for: {student_name}")
             else:
-                print(f"  ⚠️  No C# code found for: {student_name}")
+                print(f"  ⚠️  No {self._language_display_name()} submission found for: {student_name}")
 
         return assignments
     
@@ -391,6 +581,30 @@ class AutoGrader:
         if lowered.endswith(('.g.cs', '.generated.cs', '.assemblyinfo.cs')):
             return True
         return False
+
+    _SCREENSHOT_EXTENSIONS = frozenset(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp'))
+
+    def _screenshot_note(self, directory: str) -> str:
+        """Return a note about screenshot files present in the submission directory, or '' if none."""
+        found = []
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+            for file in files:
+                if Path(file).suffix.lower() in self._SCREENSHOT_EXTENSIONS:
+                    rel = os.path.relpath(os.path.join(root, file), directory)
+                    found.append(rel)
+        if not found:
+            return ""
+        file_list = "\n".join(f"  - {f}" for f in sorted(found))
+        return (
+            f"[SCREENSHOTS SUBMITTED: {len(found)} image file(s) were included in this submission — "
+            f"treat screenshot requirements as fulfilled]\n{file_list}"
+        )
+
+    def _append_screenshot_note(self, content: str, directory: str) -> str:
+        """Append screenshot presence note to submission content."""
+        note = self._screenshot_note(directory)
+        return f"{content}\n\n{note}" if note else content
 
     def _extract_csproj_compile_includes(self, csproj_files: List[str], root_dir: str) -> set:
         """Extract explicit Compile Include paths from .csproj files for relevance boost."""
@@ -630,7 +844,7 @@ class AutoGrader:
             except Exception as e:
                 print(f"Error reading {file_path}: {e}")
         
-        return "\n\n".join(combined)
+        return self._append_screenshot_note("\n\n".join(combined), directory)
 
     def extract_csharp_parts(self, csharp_content: str) -> Dict[str, str]:
         """Extract different parts of the C# assignment dynamically"""
@@ -760,10 +974,19 @@ class AutoGrader:
 
         response_json_parts = ",\n    ".join(json_part_blocks)
         graded_keys_list = ", ".join(graded_part_keys)
+        grading_context_text = (self.grading_context or "").strip()
+        grading_context_block = ""
+        if grading_context_text:
+            grading_context_block = (
+                "\nINSTRUCTOR-SUPPLIED GRADING CONTEXT (HIGHEST PRIORITY):\n"
+                f"{grading_context_text}\n"
+                "Interpret and apply this context when deciding what to grade and what not to penalize.\n"
+            )
         
         prompt = f"""
 You are an expert C# instructor grading a "{assignment_name}" lab assignment.
 Use the assignment instructions below as the source of truth.
+{grading_context_block}
 
 ASSIGNMENT INSTRUCTIONS:
 {instructions}
@@ -814,6 +1037,8 @@ Never place praise, confirmation, or correct behavior inside "issues". If someth
         """Send grading request to OpenAI and parse response"""
         try:
             print(f"📡 Sending request to OpenAI model: {self.model_name}...")
+            reasoning_effort = self._resolve_reasoning_effort()
+            print(f"🧠 Using reasoning effort: {reasoning_effort}")
             
             url = "https://api.openai.com/v1/responses"
             headers = {
@@ -830,7 +1055,7 @@ Never place praise, confirmation, or correct behavior inside "issues". If someth
                 "model": self.model_name,
                 "input": full_input,
                 "reasoning": {
-                    "effort": "low"
+                    "effort": reasoning_effort
                 }
             }
 
@@ -920,6 +1145,16 @@ Never place praise, confirmation, or correct behavior inside "issues". If someth
                         print(f"⚠️  Transient API status {response.status_code}. Retrying in {sleep_seconds:.1f}s...")
                         time.sleep(sleep_seconds)
                         continue
+
+                    # Some models (for example gpt-5.4-pro) reject low effort.
+                    if response.status_code == 400 and attempt < max_attempts:
+                        resp_text = response.text or ""
+                        if "Unsupported value" in resp_text and "reasoning" in resp_text and "effort" in resp_text:
+                            current_effort = data.get("reasoning", {}).get("effort", "")
+                            if current_effort == "low":
+                                data["reasoning"]["effort"] = "medium"
+                                print("⚠️  Model rejected effort=low. Retrying with effort=medium...")
+                                continue
 
                     break
 
@@ -1529,34 +1764,53 @@ PART SCORES:
 
         part_instruction_map = self.extract_part_instruction_map(instructions_html)
 
-        def issue_terms(issue_items: List[str]) -> List[str]:
-            """Extract searchable keywords from issue text to mark likely problematic code lines."""
-            stopwords = {
-                'missing', 'incorrect', 'no', 'not', 'with', 'for', 'the', 'and',
-                'from', 'into', 'that', 'this', 'part', 'logic', 'behavior', 'output',
-                'comments', 'comment', 'array', 'arrays', 'value', 'values'
+        def _ann_terms(text: str) -> List[str]:
+            """Extract meaningful searchable tokens from a single annotation string."""
+            _stopwords = {
+                'missing', 'incorrect', 'no', 'not', 'with', 'for', 'the', 'and', 'from',
+                'into', 'that', 'this', 'part', 'logic', 'behavior', 'output', 'comment',
+                'comments', 'array', 'arrays', 'value', 'values', 'issue', 'deduction',
+                'suggestion', 'fix', 'should', 'must', 'need', 'needs', 'point', 'points',
+                'was', 'were', 'has', 'have', 'had', 'does', 'did', 'will', 'would',
+                'could', 'which', 'when', 'where', 'what', 'how', 'also', 'just', 'code',
+                'line', 'lines', 'file', 'required', 'expected', 'used', 'use', 'uses',
+                'add', 'added', 'provide', 'provided', 'include', 'included', 'implement',
+                'implemented', 'print', 'display', 'show', 'returns', 'make', 'each',
+                'been', 'true', 'false', 'none', 'null', 'int', 'str', 'bool', 'var',
+                'there', 'their', 'then', 'they', 'are', 'but', 'its', 'than', 'some',
+                'any', 'all', 'more', 'less', 'such', 'only',
             }
-            terms = []
-            for item in issue_items:
-                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", str(item).lower()):
-                    if token not in stopwords:
-                        terms.append(token)
-            # Keep unique order and only a limited set to avoid over-highlighting.
-            seen = set()
-            unique_terms = []
-            for t in terms:
-                if t not in seen:
-                    seen.add(t)
-                    unique_terms.append(t)
-            return unique_terms[:12]
+            seen: set = set()
+            result: List[str] = []
+            for token in re.findall(r'[A-Za-z_][A-Za-z0-9_]{2,}', str(text)):
+                lower = token.lower()
+                if lower not in _stopwords and lower not in seen:
+                    seen.add(lower)
+                    result.append(lower)
+            return result[:10]
 
-        def render_code_with_highlights(code_text: str, issue_items: List[str], annotation_items: List[str], language: str) -> str:
-            """Render escaped code with compact callouts only on likely problematic lines."""
+        def _best_line_for_annotation(ann_text: str, source_lines: List[str]) -> int:
+            """Return 0-based index of the source line best matching this annotation, -1 if none."""
+            terms = _ann_terms(ann_text)
+            if not terms:
+                return -1
+            best_score, best_idx = 0, -1
+            for idx, line in enumerate(source_lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                lowered = stripped.lower()
+                score = sum(1 for t in terms if t in lowered)
+                if score > best_score:
+                    best_score, best_idx = score, idx
+            return best_idx if best_score >= 1 else -1
+
+        def render_code_with_highlights(code_text: str, issue_items: List[str], typed_annotations: List[dict], language: str) -> str:
+            """Render escaped code with per-annotation callouts placed next to the best-matching line."""
             code_text = str(code_text or "")
             if not code_text.strip():
                 return "<div class=\"code-block\"><div class=\"code-line\">(No code provided)</div></div>"
 
-            terms = issue_terms(issue_items)
             keyword_map = {
                 'csharp': {'using', 'namespace', 'class', 'public', 'private', 'protected', 'static', 'void', 'int', 'string', 'bool', 'if', 'else', 'for', 'foreach', 'while', 'return', 'new'},
                 'python': {'def', 'class', 'import', 'from', 'if', 'elif', 'else', 'for', 'while', 'return', 'try', 'except', 'with', 'lambda'},
@@ -1593,34 +1847,68 @@ PART SCORES:
 
             source_lines = code_text.splitlines()
             line_languages = infer_line_languages(code_text, language)
-            pending_notes = [str(note).strip() for note in annotation_items if str(note).strip()]
+
+            # Match each annotation individually to its best-fitting source line
+            line_annotations: dict = {}  # line_idx -> list[dict]
+            unmatched: List[dict] = []
+            for ann in typed_annotations:
+                idx = _best_line_for_annotation(ann['text'], source_lines)
+                if idx >= 0:
+                    line_annotations.setdefault(idx, []).append(ann)
+                else:
+                    unmatched.append(ann)
+
+            _type_info = {
+                'issue':      ('ann-card ann-issue',      '✗ Issue'),
+                'deduction':  ('ann-card ann-deduction',  '− Points'),
+                'suggestion': ('ann-card ann-suggestion', '✓ Fix'),
+            }
+            _badge_cls = {'issue': 'lb-issue', 'deduction': 'lb-deduction', 'suggestion': 'lb-suggestion'}
+
+            def render_ann_card(ann: dict) -> str:
+                cls, label = _type_info.get(ann['type'], ('ann-card ann-issue', ann['type'].title()))
+                return (
+                    f'<div class="{cls}">'
+                    f'<span class="ann-type-badge">{esc(label)}</span>'
+                    f'<span class="ann-num-circle">{ann["num"]}</span>'
+                    f'<span class="ann-text">{esc(ann["text"])}</span>'
+                    f'</div>'
+                )
 
             rows_html = []
             for idx, line in enumerate(source_lines):
-                lowered = line.lower()
-                hit = any(term in lowered for term in terms) if terms else False
                 effective_language = line_languages[idx] if idx < len(line_languages) else language
                 line_type = classify_line(line, effective_language)
+                anns = line_annotations.get(idx, [])
                 cls = "code-line"
-                if hit:
+                if anns:
                     cls += " issue-line"
                 if line_type:
                     cls += f" {line_type}"
-                line_note_html = ""
-                if hit and pending_notes:
-                    note_text = esc(pending_notes.pop(0))
-                    line_note_html = f"<aside class=\"line-note\">{note_text}</aside>"
+
+                badges_html = (
+                    "<span class=\"line-badges\">"
+                    + "".join(
+                        f'<span class="line-badge {_badge_cls.get(a["type"], "lb-issue")}" title="{esc(a["text"])}">{a["num"]}</span>'
+                        for a in anns
+                    )
+                    + "</span>"
+                ) if anns else ""
+
+                ann_col_html = (
+                    "<div class=\"ann-col\">"
+                    + "".join(render_ann_card(a) for a in anns)
+                    + "</div>"
+                ) if anns else ""
+
                 rows_html.append(
-                    f"<div class=\"code-row\"><div class=\"{cls}\">{esc(line)}</div>{line_note_html}</div>"
+                    f"<div class=\"code-row\"><div class=\"{cls}\">{esc(line)}{badges_html}</div>{ann_col_html}</div>"
                 )
 
-            if pending_notes:
-                remaining = "".join(f"<li>{esc(note)}</li>" for note in pending_notes)
+            if unmatched:
+                cards = "".join(render_ann_card(a) for a in unmatched)
                 rows_html.append(
-                    "<div class=\"unmatched-notes\">"
-                    "<strong>Additional correction notes</strong>"
-                    f"<ul>{remaining}</ul>"
-                    "</div>"
+                    f'<div class="unmatched-notes"><strong>Remaining notes</strong><div class="ann-col">{cards}</div></div>'
                 )
 
             return f"<div class=\"code-block\">{''.join(rows_html)}</div>"
@@ -1647,28 +1935,26 @@ PART SCORES:
                     f"<li>{esc(item)}</li>" for item in part_data.get('suggestions', [])
                 ) or "<li>None</li>"
 
-                inline_notes = []
-                inline_notes.extend([f"Issue: {item}" for item in issue_items])
-                inline_notes.extend([f"Deduction: {item}" for item in part_data.get('point_deductions', [])])
-                inline_notes.extend([f"Correction Hint: {item}" for item in part_data.get('suggestions', [])])
-                if not inline_notes:
-                    inline_notes = ["No corrections needed for this part."]
-                inline_notes_html = "".join(f"<li>{esc(note)}</li>" for note in inline_notes)
-
                 original_code_raw = part_data.get('original_code', '')
                 detected_languages = infer_submission_languages(original_code_raw)
                 primary_language = detected_languages[0] if detected_languages else 'plain'
                 lang_labels = ", ".join(language_display_name(lang) for lang in detected_languages)
                 code_mode_label = "Code" if any(lang != 'plain' for lang in detected_languages) else "Text"
 
-                annotation_items = []
-                annotation_items.extend([f"Issue: {item}" for item in issue_items])
-                annotation_items.extend([f"Deduction: {item}" for item in part_data.get('point_deductions', [])])
-                annotation_items.extend([f"Fix: {item}" for item in part_data.get('suggestions', [])])
+                deductions = part_data.get('point_deductions', [])
+                suggestions = part_data.get('suggestions', [])
+                typed_annotations = (
+                    [{'type': 'issue',      'text': item, 'num': i + 1}
+                     for i, item in enumerate(issue_items)] +
+                    [{'type': 'deduction',  'text': item, 'num': len(issue_items) + i + 1}
+                     for i, item in enumerate(deductions)] +
+                    [{'type': 'suggestion', 'text': item, 'num': len(issue_items) + len(deductions) + i + 1}
+                     for i, item in enumerate(suggestions)]
+                )
 
                 code_block_html = (
                     f"<div class=\"language-chip\">Detected {code_mode_label}: {esc(lang_labels)}</div>"
-                    f"<h4>Original Answer</h4>{render_code_with_highlights(original_code_raw, issue_items, annotation_items, primary_language)}"
+                    f"<h4>Original Answer</h4>{render_code_with_highlights(original_code_raw, issue_items, typed_annotations, primary_language)}"
                 )
 
                 score_class = "part-score low" if score < 70 else "part-score"
@@ -1690,10 +1976,6 @@ PART SCORES:
                             <div class=\"panel submission-panel\">
                                 <h4>Student Submission</h4>
                                 {code_block_html}
-                                <div class="inline-notes">
-                                    <h4>Part Notes and Corrections</h4>
-                                    <ul>{inline_notes_html}</ul>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -1755,9 +2037,24 @@ PART SCORES:
         .code-block {{ background: #0b1020; color: #e5e7eb; border-radius: 8px; padding: 12px; overflow-x: auto; }}
         .code-row {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 10px; align-items: start; }}
         .code-line {{ display: block; padding: 1px 8px; margin: 0 -8px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }}
-        .line-note {{ background: #fef3c7; color: #7c2d12; border: 1px solid #f59e0b; border-radius: 8px; padding: 6px 8px; font-size: 12px; line-height: 1.35; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }}
-        .unmatched-notes {{ margin-top: 10px; background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 8px; padding: 8px 10px; }}
-        .unmatched-notes ul {{ margin: 6px 0 0; padding-left: 18px; }}
+        .ann-col {{ display: flex; flex-direction: column; gap: 5px; padding: 2px 0; }}
+        .ann-card {{ display: flex; align-items: flex-start; gap: 5px; border-radius: 7px; border: 1px solid; padding: 5px 8px; font-size: 11px; line-height: 1.4; box-shadow: 0 1px 3px rgba(0,0,0,0.10); max-width: 300px; word-break: break-word; }}
+        .ann-issue {{ background: #fef2f2; border-color: #fca5a5; color: #7f1d1d; }}
+        .ann-deduction {{ background: #fff7ed; border-color: #fed7aa; color: #7c2d12; }}
+        .ann-suggestion {{ background: #f0fdf4; border-color: #86efac; color: #14532d; }}
+        .ann-type-badge {{ flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 999px; white-space: nowrap; margin-top: 1px; }}
+        .ann-issue .ann-type-badge {{ background: #fee2e2; color: #991b1b; }}
+        .ann-deduction .ann-type-badge {{ background: #ffedd5; color: #9a3412; }}
+        .ann-suggestion .ann-type-badge {{ background: #dcfce7; color: #166534; }}
+        .ann-num-circle {{ flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; font-size: 9px; font-weight: 800; background: rgba(0,0,0,0.12); color: inherit; margin-top: 1px; }}
+        .ann-text {{ flex: 1 1 0; }}
+        .line-badges {{ display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }}
+        .line-badge {{ display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; font-size: 8px; font-weight: 800; line-height: 1; cursor: default; }}
+        .lb-issue {{ background: #ef4444; color: #fff; }}
+        .lb-deduction {{ background: #f97316; color: #fff; }}
+        .lb-suggestion {{ background: #22c55e; color: #fff; }}
+        .unmatched-notes {{ margin-top: 10px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px; }}
+        .unmatched-notes > strong {{ display: block; color: #94a3b8; font-size: 11px; margin-bottom: 6px; }}
         .issue-line {{ background: rgba(239, 68, 68, 0.22); border-left: 3px solid #ef4444; }}
         .code-comment-line {{ color: #9ca3af; }}
         .code-string-line {{ color: #fca5a5; }}

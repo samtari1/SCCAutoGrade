@@ -67,6 +67,7 @@ async def create_job(
     multi_agent_grading: bool = Form(True),
     multi_agent_disagreement_threshold: float = Form(5.0),
     multi_agent_part_disagreement_threshold: float = Form(10.0),
+    grading_context: str = Form(""),
 ) -> CreateJobResponse:
     if not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
@@ -115,7 +116,8 @@ async def create_job(
             f"[router] route_type={route_type}; evaluator={selected_evaluator}; reason={routing_reason}; "
             f"multi_agent={str(multi_agent_grading).lower()}; "
             f"disagreement_threshold={multi_agent_disagreement_threshold}; "
-            f"part_disagreement_threshold={multi_agent_part_disagreement_threshold}\n"
+            f"part_disagreement_threshold={multi_agent_part_disagreement_threshold}; "
+            f"grading_context={'provided' if grading_context.strip() else 'none'}\n"
         ),
         encoding="utf-8",
     )
@@ -133,6 +135,7 @@ async def create_job(
             multi_agent_grading=multi_agent_grading,
             multi_agent_disagreement_threshold=multi_agent_disagreement_threshold,
             multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
+            grading_context=grading_context,
         )
     else:
         queue = get_queue()
@@ -149,6 +152,7 @@ async def create_job(
             multi_agent_grading,
             multi_agent_disagreement_threshold,
             multi_agent_part_disagreement_threshold,
+            grading_context,
             job_id=job_id,
             job_timeout="2h",
         )

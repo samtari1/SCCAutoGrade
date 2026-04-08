@@ -76,14 +76,17 @@ def detect_code_specialty(instructions_text: str) -> Tuple[str, str]:
     """Infer a likely code language specialty for code-route assignments."""
     text = (instructions_text or "").lower()
 
+    # Prioritize SQL first because SQL assignments often include words like
+    # "python" in tooling/instructions while still being fundamentally SQL tasks.
+    if re.search(r"\bsql\b|\bquery\b|\bselect\b|\bjoin\b", text):
+        return "sql", "Detected SQL indicators"
+
     if re.search(r"\bc#\b|\bwinforms\b|\bwindows forms\b|\.cs\b", text):
         return "csharp", "Detected C#/WinForms indicators"
     if re.search(r"\bpython\b|\.py\b|\bpandas\b|\bnumpy\b", text):
         return "python", "Detected Python indicators"
     if re.search(r"\bjavascript\b|\bnode\b|\.js\b|\breact\b", text):
         return "javascript", "Detected JavaScript indicators"
-    if re.search(r"\bsql\b|\bquery\b|\bselect\b|\bjoin\b", text):
-        return "sql", "Detected SQL indicators"
 
     return "csharp", "No strong language indicator; defaulting to C# profile"
 

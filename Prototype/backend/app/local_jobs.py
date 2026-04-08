@@ -22,6 +22,7 @@ def submit_local_job(
     multi_agent_grading: bool,
     multi_agent_disagreement_threshold: float,
     multi_agent_part_disagreement_threshold: float,
+    grading_context: str,
 ) -> None:
     with _LOCK:
         _JOBS[job_id] = {
@@ -54,6 +55,7 @@ def submit_local_job(
                 multi_agent_grading=multi_agent_grading,
                 multi_agent_disagreement_threshold=multi_agent_disagreement_threshold,
                 multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
+                grading_context=grading_context,
             )
             with _LOCK:
                 _JOBS[job_id]["status"] = result.get("status", "finished")

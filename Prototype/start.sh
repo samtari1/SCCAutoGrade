@@ -8,6 +8,29 @@ REDIS_MODE="unknown"
 INMEMORY_MODE="0"
 PIDS=()
 
+stop_stale_processes() {
+  echo "[start] Cleaning up stale project processes..."
+
+  pkill -f "$ROOT_DIR/.venv/bin/python -m uvicorn backend.app.main:app" >/dev/null 2>&1 || true
+  pkill -f "$ROOT_DIR/.venv/bin/python -m backend.worker" >/dev/null 2>&1 || true
+  pkill -f "$ROOT_DIR/frontend/node_modules/.bin/vite --host 0.0.0.0 --port 5173" >/dev/null 2>&1 || true
+
+  if command -v lsof >/dev/null 2>&1; then
+    backend_pids="$(lsof -ti tcp:8000 -sTCP:LISTEN 2>/dev/null || true)"
+    frontend_pids="$(lsof -ti tcp:5173 -sTCP:LISTEN 2>/dev/null || true)"
+
+    if [[ -n "$backend_pids" ]]; then
+      echo "[start] Releasing port 8000 from stale process(es): $backend_pids"
+      kill $backend_pids >/dev/null 2>&1 || true
+    fi
+
+    if [[ -n "$frontend_pids" ]]; then
+      echo "[start] Releasing port 5173 from stale process(es): $frontend_pids"
+      kill $frontend_pids >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
   echo "[start] Missing virtual environment. Run ./setup.sh first."
   exit 1
@@ -17,6 +40,11 @@ if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   echo "[start] Missing frontend dependencies. Run ./setup.sh first."
   exit 1
 fi
+
+echo "[start] Syncing backend Python dependencies..."
+"$ROOT_DIR/.venv/bin/python" -m pip install --disable-pip-version-check -r "$ROOT_DIR/backend/requirements.txt" >/dev/null
+
+stop_stale_processes
 
 cd "$ROOT_DIR"
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -76,7 +104,7 @@ else
   echo "[start] Launching RQ worker..."
   (
     cd "$ROOT_DIR"
-    ./.venv/bin/python backend/worker.py
+    ./.venv/bin/python -m backend.worker
   ) >"$LOG_DIR/worker.log" 2>&1 &
   PIDS+=("$!")
 fi

@@ -46,8 +46,10 @@ Open another terminal in workspace root:
 
 ```bash
 source .venv/bin/activate
-python backend/worker.py
+python -m backend.worker
 ```
+
+On macOS, the worker automatically uses `SimpleWorker` (non-forking mode) to avoid `Work-horse terminated unexpectedly; signal 6` crashes related to fork safety.
 
 ## 4) Start React Frontend
 

@@ -57,6 +57,8 @@ class AutoGradeAdapter:
             grader.language_hint = self.config.language_hint
         if hasattr(grader, "grading_profile"):
             grader.grading_profile = self.config.route_type
+        if hasattr(grader, "grading_context"):
+            grader.grading_context = str(metadata.get("grading_context") or "")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         grader.grade_all_assignments(
