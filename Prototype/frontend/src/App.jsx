@@ -1,12 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+const RUNNING_STATUSES = new Set(["queued", "started", "deferred", "scheduled", "submitting", "pending"]);
+const STOPPABLE_STATUSES = new Set(["queued", "started", "deferred", "scheduled", "pending"]);
+const ROUTES = {
+  grader: "grader",
+  history: "history"
+};
+
+function routeFromHash() {
+  return window.location.hash === "#/history" ? ROUTES.history : ROUTES.grader;
+}
+
+function relTime(unixTs) {
+  const diff = Date.now() / 1000 - unixTs;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function StatusBadge({ status }) {
+  let cls = "badge ";
+  if (RUNNING_STATUSES.has(status)) cls += "badge-running";
+  else if (status === "finished") cls += "badge-done";
+  else if (status === "failed") cls += "badge-fail";
+  else cls += "badge-idle";
+  const label = RUNNING_STATUSES.has(status) ? "running" : status;
+  return <span className={cls}>{label}</span>;
+}
+
 function App() {
+  const [page, setPage] = useState(routeFromHash);
   const [mainZip, setMainZip] = useState(null);
   const [instructionsHtml, setInstructionsHtml] = useState(null);
-  const [jobId, setJobId] = useState("");
-  const [status, setStatus] = useState("idle");
+  const [jobId, setJobId] = useState(() => localStorage.getItem("ag_job_id") || "");
+  const [status, setStatus] = useState(() => localStorage.getItem("ag_job_id") ? "queued" : "idle");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [artifacts, setArtifacts] = useState([]);
@@ -26,6 +56,30 @@ function App() {
   );
   const [availableEvaluators, setAvailableEvaluators] = useState([]);
   const streamPanelRef = useRef(null);
+  const statusSectionRef = useRef(null);
+
+  // History state
+  const [jobHistory, setJobHistory] = useState([]);
+  const [expandedJobId, setExpandedJobId] = useState(null);
+  const [historyArtifacts, setHistoryArtifacts] = useState({});
+  const [reportUrl, setReportUrl] = useState(null);
+  const [reportTitle, setReportTitle] = useState("");
+  const [cancelingJobIds, setCancelingJobIds] = useState({});
+
+  useEffect(() => {
+    const onHashChange = () => setPage(routeFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    onHashChange();
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  function navigateTo(nextPage) {
+    const nextHash = nextPage === ROUTES.history ? "#/history" : "#/";
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+    setPage(nextPage);
+  }
 
   useEffect(() => {
     const loadEvaluators = async () => {
@@ -44,6 +98,72 @@ function App() {
     loadEvaluators();
   }, []);
 
+  // Persist current job ID across page refreshes.
+  useEffect(() => {
+    if (jobId) localStorage.setItem("ag_job_id", jobId);
+  }, [jobId]);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const jobs = data.jobs || [];
+      setJobHistory(jobs);
+      return jobs;
+    } catch {
+      // history panel is non-critical
+      return [];
+    }
+  }, []);
+
+  const syncCurrentJobFromHistory = useCallback(async (targetJobId) => {
+    const currentId = targetJobId || jobId;
+    if (!currentId) {
+      return;
+    }
+
+    const jobs = await fetchHistory();
+    const matched = jobs.find((job) => job.job_id === currentId);
+    if (!matched) {
+      setStatus("unknown");
+      setMessage("Job not found in active queue. It may have expired from Redis.");
+      return;
+    }
+
+    setStatus(matched.status || "unknown");
+    setActiveEvaluator(matched.evaluator_key || "");
+    setRouteType(matched.route_type || "");
+    if (["finished", "failed", "canceled", "stopped"].includes(matched.status)) {
+      setError("");
+    }
+
+    // Pull artifacts for completed jobs so reports still show on refresh/reopen.
+    if ((matched.artifact_count || 0) > 0) {
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/${currentId}/artifacts`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.files)) {
+            setArtifacts(data.files);
+          }
+        }
+      } catch {
+        // Keep existing artifacts if artifact fetch fails.
+      }
+    }
+  }, [fetchHistory, jobId]);
+
+  useEffect(() => {
+    if (page !== ROUTES.history) {
+      return;
+    }
+
+    fetchHistory();
+    const timer = setInterval(fetchHistory, 10000);
+    return () => clearInterval(timer);
+  }, [fetchHistory, page]);
+
   const canSubmit = useMemo(() => Boolean(mainZip && instructionsHtml), [mainZip, instructionsHtml]);
 
   useEffect(() => {
@@ -55,6 +175,10 @@ function App() {
       try {
         const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
         if (!res.ok) {
+          if (res.status === 404) {
+            await syncCurrentJobFromHistory(jobId);
+            return;
+          }
           throw new Error(`Failed to fetch job status (${res.status})`);
         }
         const data = await res.json();
@@ -70,7 +194,7 @@ function App() {
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [jobId, status, streamConnected]);
+  }, [jobId, status, streamConnected, syncCurrentJobFromHistory]);
 
   useEffect(() => {
     if (!jobId) {
@@ -105,6 +229,7 @@ function App() {
         }
         if (data.status === "finished" || data.status === "failed") {
           stream.close();
+          fetchHistory();
         }
       } catch {
         // Ignore malformed stream packets.
@@ -115,13 +240,18 @@ function App() {
       setStreamConnected(false);
       // Do not close manually; EventSource will auto-reconnect.
       setError((prev) => prev || "Live stream disconnected temporarily. Retrying...");
+
+      // If this is an old job no longer present in Redis, reconcile from disk-backed history.
+      if (RUNNING_STATUSES.has(status)) {
+        syncCurrentJobFromHistory(jobId);
+      }
     };
 
     return () => {
       setStreamConnected(false);
       stream.close();
     };
-  }, [jobId]);
+  }, [jobId, status, syncCurrentJobFromHistory]);
 
   useEffect(() => {
     if (!autoScrollStream || !streamPanelRef.current) {
@@ -167,19 +297,127 @@ function App() {
       setActiveEvaluator(data.evaluator_key || "");
       setRouteType(data.route_type || "");
       setRoutingReason(data.routing_reason || "");
+      statusSectionRef.current?.scrollIntoView({ behavior: "smooth" });
     } catch (err) {
       setStatus("failed");
       setError(err.message || "Unknown submit error");
     }
   }
 
+  async function toggleExpandJob(jid) {
+    if (expandedJobId === jid) {
+      setExpandedJobId(null);
+      return;
+    }
+    setExpandedJobId(jid);
+    if (!historyArtifacts[jid]) {
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/${jid}/artifacts`);
+        if (res.ok) {
+          const data = await res.json();
+          setHistoryArtifacts((prev) => ({ ...prev, [jid]: data.files || [] }));
+        }
+      } catch {
+        setHistoryArtifacts((prev) => ({ ...prev, [jid]: [] }));
+      }
+    }
+  }
+
+  function openReport(jid, filename) {
+    setReportUrl(`${API_BASE}/api/jobs/${jid}/artifacts/${encodeURIComponent(filename)}`);
+    setReportTitle(filename);
+  }
+
+  async function stopJob(targetJobId) {
+    if (!targetJobId || cancelingJobIds[targetJobId]) {
+      return;
+    }
+
+    setCancelingJobIds((prev) => ({ ...prev, [targetJobId]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}/cancel`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to stop job");
+      }
+
+      if (targetJobId === jobId) {
+        if (data.status) {
+          setStatus(data.status);
+        }
+        if (data.message) {
+          setMessage(data.message);
+        }
+      }
+      fetchHistory();
+    } catch (err) {
+      if (targetJobId === jobId) {
+        setError(err.message || "Failed to stop job");
+      }
+    } finally {
+      setCancelingJobIds((prev) => {
+        const next = { ...prev };
+        delete next[targetJobId];
+        return next;
+      });
+    }
+  }
+
+  const isActiveJob = RUNNING_STATUSES.has(status);
+  const canStopActiveJob = Boolean(jobId) && STOPPABLE_STATUSES.has(status);
+
   return (
     <main className="page">
+      {reportUrl && (
+        <div className="report-backdrop" onClick={() => setReportUrl(null)}>
+          <div className="report-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="report-modal-bar">
+              <span className="report-modal-title">{reportTitle}</span>
+              <button className="btn-ghost" onClick={() => setReportUrl(null)}>✕ Close</button>
+            </div>
+            <iframe
+              src={reportUrl}
+              className="report-frame"
+              title={reportTitle}
+              sandbox="allow-same-origin allow-scripts allow-popups"
+            />
+          </div>
+        </div>
+      )}
+
       <section className="hero">
         <h1>AutoGrade Control Panel</h1>
-        <p>Upload submissions and assignment instructions, then track grading in real time.</p>
+        <p>
+          {page === ROUTES.grader
+            ? "Upload submissions and assignment instructions, then track grading in real time."
+            : "Browse all past grading batches, monitor running jobs, and open reports."}
+        </p>
       </section>
 
+      <section className="card nav-card">
+        <div className="top-nav" role="tablist" aria-label="Main pages">
+          <button
+            type="button"
+            className={page === ROUTES.grader ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
+            onClick={() => navigateTo(ROUTES.grader)}
+            aria-current={page === ROUTES.grader ? "page" : undefined}
+          >
+            Grading
+          </button>
+          <button
+            type="button"
+            className={page === ROUTES.history ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
+            onClick={() => navigateTo(ROUTES.history)}
+            aria-current={page === ROUTES.history ? "page" : undefined}
+          >
+            History
+          </button>
+        </div>
+      </section>
+
+      {page === ROUTES.grader && (
       <section className="card">
         <form onSubmit={submitJob} className="form">
           <label>
@@ -254,11 +492,19 @@ function App() {
           </button>
         </form>
       </section>
+      )}
 
-      <section className="card status">
-        <h2>Job Status</h2>
-        <p>Status: <strong>{status}</strong></p>
-        {jobId && <p>Job ID: {jobId}</p>}
+      {page === ROUTES.grader && (
+      <section className="card status" ref={statusSectionRef} id="status-section">
+        <div className="status-heading">
+          <h2>Job Status</h2>
+          {isActiveJob && <span className="pulse-dot" title="Grading in progress" />}
+        </div>
+        <p>
+          Status: <strong>{status}</strong>
+          {isActiveJob ? " — grading in progress" : ""}
+        </p>
+        {jobId && <p className="job-id-line">Job ID: <code>{jobId}</code></p>}
         {activeEvaluator && <p>Evaluator: <strong>{activeEvaluator}</strong></p>}
         {routeType && <p>Routed Type: <strong>{routeType}</strong></p>}
         {routingReason && <p>Routing Reason: {routingReason}</p>}
@@ -271,18 +517,40 @@ function App() {
         {message && <p>{message}</p>}
         {error && <p className="error">{error}</p>}
 
+        {canStopActiveJob && (
+          <button
+            type="button"
+            className="btn-danger"
+            onClick={() => stopJob(jobId)}
+            disabled={Boolean(cancelingJobIds[jobId])}
+          >
+            {cancelingJobIds[jobId] ? "Stopping..." : "Stop Grading"}
+          </button>
+        )}
+
         {artifacts.length > 0 && (
           <>
-            <h3>Artifacts</h3>
-            <ul>
+            <h3>Reports</h3>
+            <div className="artifact-list">
               {artifacts.map((file) => (
-                <li key={file}>
-                  <a href={`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`} target="_blank" rel="noreferrer">
-                    {file}
+                <div key={file} className="artifact-item">
+                  <span className="artifact-name">{file}</span>
+                  {file.endsWith(".html") && (
+                    <button type="button" className="btn-ghost btn-sm" onClick={() => openReport(jobId, file)}>
+                      View
+                    </button>
+                  )}
+                  <a
+                    href={`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-link btn-sm"
+                  >
+                    Download
                   </a>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           </>
         )}
 
@@ -301,6 +569,98 @@ function App() {
           {streamLines.length ? streamLines.join("\n") : "Waiting for grading output..."}
         </pre>
       </section>
+      )}
+
+      {page === ROUTES.history && (
+      <section className="card">
+        <div className="history-header">
+          <h2>Job History</h2>
+          <button type="button" className="btn-ghost btn-sm" onClick={fetchHistory}>Refresh</button>
+        </div>
+        {jobHistory.length === 0 ? (
+          <p className="history-empty">No grading jobs found.</p>
+        ) : (
+          <table className="history-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Status</th>
+                <th>Evaluator</th>
+                <th>Reports</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobHistory.map((job) => (
+                <Fragment key={job.job_id}>
+                  <tr className="history-row">
+                    <td className="history-time">{relTime(job.created_at)}</td>
+                    <td><StatusBadge status={job.status} /></td>
+                    <td className="history-eval">{job.evaluator_key || "—"}</td>
+                    <td>{job.artifact_count}</td>
+                    <td className="history-actions">
+                      {STOPPABLE_STATUSES.has(job.status) && (
+                        <button
+                          type="button"
+                          className="btn-danger btn-sm"
+                          onClick={() => stopJob(job.job_id)}
+                          disabled={Boolean(cancelingJobIds[job.job_id])}
+                        >
+                          {cancelingJobIds[job.job_id] ? "Stopping..." : "Stop"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-ghost btn-sm"
+                        onClick={() => toggleExpandJob(job.job_id)}
+                      >
+                        {expandedJobId === job.job_id ? "▲ Hide" : "▼ Reports"}
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedJobId === job.job_id && (
+                    <tr className="history-expand-row">
+                      <td colSpan={5}>
+                        {!historyArtifacts[job.job_id] ? (
+                          <span className="history-loading">Loading…</span>
+                        ) : historyArtifacts[job.job_id].length === 0 ? (
+                          <span className="history-empty-text">No reports yet.</span>
+                        ) : (
+                          <div className="artifact-list">
+                            {historyArtifacts[job.job_id].map((f) => (
+                              <div key={f} className="artifact-item">
+                                <span className="artifact-name">{f}</span>
+                                {f.endsWith(".html") && (
+                                  <button
+                                    type="button"
+                                    className="btn-ghost btn-sm"
+                                    onClick={() => openReport(job.job_id, f)}
+                                  >
+                                    View
+                                  </button>
+                                )}
+                                <a
+                                  href={`${API_BASE}/api/jobs/${job.job_id}/artifacts/${encodeURIComponent(f)}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="btn-link btn-sm"
+                                >
+                                  Download
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+      )}
     </main>
   );
 }

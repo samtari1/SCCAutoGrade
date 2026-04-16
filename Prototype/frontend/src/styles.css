@@ -23,11 +23,16 @@ body {
 }
 
 .page {
-  max-width: 900px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
   padding: 2rem 1rem 3rem;
   display: grid;
   gap: 1rem;
+}
+
+.page > * {
+  min-width: 0;
 }
 
 .hero h1 {
@@ -37,7 +42,6 @@ body {
 
 .hero p {
   margin: 0.5rem 0 0;
-  max-width: 58ch;
 }
 
 .card {
@@ -46,6 +50,31 @@ body {
   border-radius: 14px;
   padding: 1rem;
   box-shadow: 0 10px 30px rgba(75, 45, 18, 0.08);
+  min-width: 0;
+}
+
+.nav-card {
+  padding: 0.65rem;
+}
+
+.top-nav {
+  display: inline-flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  min-width: 120px;
+  text-align: center;
+}
+
+.nav-btn-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.nav-btn-active:hover {
+  background: var(--accent);
 }
 
 .form {
@@ -107,11 +136,16 @@ button:disabled {
   padding: 0.5rem;
 }
 
+  transition: background-color 0.15s ease;
 a {
   color: var(--accent);
 }
 
 .options-grid {
+.history-row:hover td,
+.history-row:focus-within td {
+  background: #fff3df;
+}
   display: grid;
   gap: 0.7rem;
   border: 1px solid var(--line);
@@ -157,6 +191,8 @@ a {
 .stream-panel {
   margin: 0.45rem 0 0;
   padding: 0.75rem;
+  width: 100%;
+  max-width: 100%;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: #1f1b17;
@@ -167,6 +203,279 @@ a {
   max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ── Status heading with pulse indicator ── */
+.status-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.status-heading h2 {
+  margin: 0;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.3); }
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e07b00;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Job ID line ── */
+.job-id-line code {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+  background: #f0ece3;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  word-break: break-all;
+}
+
+/* ── Status badges ── */
+.badge {
+  display: inline-block;
+  padding: 0.2em 0.65em;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.badge-running {
+  background: #fff0d0;
+  color: #8a5200;
+  border: 1px solid #f5c97a;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.badge-done {
+  background: #d6f5e3;
+  color: #1a5c38;
+  border: 1px solid #88ddb0;
+}
+
+.badge-fail {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid #efc0b7;
+}
+
+.badge-idle {
+  background: #eeebe4;
+  color: #6b6355;
+  border: 1px solid var(--line);
+}
+
+/* ── Secondary / ghost buttons ── */
+.btn-ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-weight: 600;
+  font-size: inherit;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.btn-ghost:hover {
+  background: var(--accent-soft);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.btn-link {
+  display: inline-block;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-link:hover {
+  background: var(--accent-soft);
+}
+
+.btn-danger {
+  background: #b42318;
+  color: #fff;
+  border: 1px solid #8b1a13;
+}
+
+.btn-danger:hover {
+  background: #9c1f15;
+}
+
+/* ── Artifact list (used in status panel + history expand) ── */
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.artifact-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.artifact-name {
+  flex: 1;
+  font-size: 0.85rem;
+  word-break: break-all;
+  min-width: 0;
+}
+
+/* ── History section ── */
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.history-header h2 {
+  margin: 0;
+}
+
+.history-empty {
+  color: #888;
+  font-style: italic;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.history-table th {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 2px solid var(--line);
+  font-weight: 700;
+  color: #6b6355;
+  white-space: nowrap;
+}
+
+.history-row td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.history-row:last-child td {
+  border-bottom: none;
+}
+
+.history-row-active {
+  background: #fff8ee;
+}
+
+.history-time {
+  white-space: nowrap;
+  color: #7a7060;
+}
+
+.history-eval {
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
+.history-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.history-expand-row td {
+  padding: 0.6rem 0.8rem 0.8rem;
+  background: #fffcf5;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-loading,
+.history-empty-text {
+  font-size: 0.85rem;
+  color: #888;
+  font-style: italic;
+}
+
+/* ── Report viewer modal ── */
+.report-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.report-modal {
+  background: #fff;
+  border-radius: 0;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.report-modal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.report-modal-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
 }
 
 @media (max-width: 640px) {

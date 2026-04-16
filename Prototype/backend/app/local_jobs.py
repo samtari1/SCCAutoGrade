@@ -30,6 +30,7 @@ def submit_local_job(
             "status": "queued",
             "message": "Job queued (in-memory mode)",
             "error": None,
+            "cancel_requested": False,
             "evaluator_key": evaluator_key,
             "route_type": route_type,
             "routing_reason": routing_reason,
@@ -38,6 +39,12 @@ def submit_local_job(
         }
 
     def _runner() -> None:
+        with _LOCK:
+            if _JOBS[job_id].get("cancel_requested"):
+                _JOBS[job_id]["status"] = "canceled"
+                _JOBS[job_id]["message"] = "Job canceled before execution"
+                return
+
         with _LOCK:
             _JOBS[job_id]["status"] = "started"
             _JOBS[job_id]["message"] = "Running grading"
@@ -80,3 +87,43 @@ def get_local_job(job_id: str) -> Optional[Dict[str, Any]]:
         if not job:
             return None
         return dict(job)
+
+
+def cancel_local_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Best-effort cancellation for in-memory mode.
+
+    Queued jobs are canceled immediately. Running jobs are marked as
+    "stopping" but cannot be force-terminated safely from this thread model.
+    """
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return None
+
+        status = str(job.get("status", "unknown"))
+        if status in {"finished", "failed", "canceled", "stopped"}:
+            return {
+                "job_id": job_id,
+                "status": status,
+                "message": "Job is already in a terminal state",
+            }
+
+        if status in {"queued", "deferred", "scheduled"}:
+            job["cancel_requested"] = True
+            job["status"] = "canceled"
+            job["message"] = "Job canceled"
+            return {
+                "job_id": job_id,
+                "status": "canceled",
+                "message": job["message"],
+            }
+
+        # In-memory execution runs in a thread and cannot be forcibly killed safely.
+        job["cancel_requested"] = True
+        job["status"] = "stopping"
+        job["message"] = "Stop requested (in-memory mode cannot force-stop an active run)"
+        return {
+            "job_id": job_id,
+            "status": "stopping",
+            "message": job["message"],
+        }

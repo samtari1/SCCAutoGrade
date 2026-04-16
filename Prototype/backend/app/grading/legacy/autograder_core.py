@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 import requests
 
 # Load environment variables from explicit .env locations.
-ROOT_DIR = Path(__file__).resolve().parents[5]
+ROOT_DIR = Path(__file__).resolve().parents[4]
 load_dotenv(ROOT_DIR / ".env", override=True)
 load_dotenv(ROOT_DIR / "backend" / ".env", override=True)
 

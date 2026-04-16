@@ -12,8 +12,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
+from rq.command import send_stop_job_command
+from rq.exceptions import InvalidJobOperation
 
-from .local_jobs import get_local_job, submit_local_job
+from .local_jobs import cancel_local_job, get_local_job, submit_local_job
 from .queueing import get_queue
 from .schemas import CreateJobResponse, JobStatusResponse
 from .settings import JOBS_DIR, USE_INMEMORY_QUEUE, ensure_directories
@@ -252,6 +254,61 @@ def get_job_status(job_id: str) -> JobStatusResponse:
     return _build_job_status(job_id)
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    """Cancel a queued job or request stop for a running job."""
+    if USE_INMEMORY_QUEUE:
+        result = cancel_local_job(job_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return result
+
+    queue = get_queue()
+    job = queue.fetch_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    status = str(job.get_status(refresh=True))
+    if status in {"finished", "failed", "canceled", "stopped"}:
+        return {
+            "job_id": job_id,
+            "status": status,
+            "message": "Job is already in a terminal state",
+        }
+
+    if status in {"queued", "deferred", "scheduled"}:
+        try:
+            job.cancel()
+        except InvalidJobOperation as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "job_id": job_id,
+            "status": "canceled",
+            "message": "Job canceled",
+        }
+
+    if status == "started":
+        try:
+            send_stop_job_command(queue.connection, job_id)
+        except InvalidJobOperation as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        # Best-effort UX hint while worker transitions state.
+        job.meta["message"] = "Stop requested"
+        job.save_meta()
+        return {
+            "job_id": job_id,
+            "status": "stopping",
+            "message": "Stop requested",
+        }
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "message": f"Cannot cancel job in current state: {status}",
+    }
+
+
 @app.get("/api/jobs/{job_id}/stream")
 async def stream_job(job_id: str):
     stream_path = JOBS_DIR / job_id / "stream.log"
@@ -316,6 +373,111 @@ def list_artifacts(job_id: str) -> dict:
 
     files: List[str] = sorted([p.name for p in output_dir.glob("*") if p.is_file()])
     return {"job_id": job_id, "files": files}
+
+
+@app.get("/api/jobs/{job_id}/artifacts/{filename}")
+def download_artifact(job_id: str, filename: str) -> FileResponse:
+    # Prevent path traversal: strip any directory components from the filename.
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    output_dir = JOBS_DIR / job_id / "output"
+    artifact_path = (output_dir / safe_name).resolve()
+
+    # Ensure the resolved path stays within the intended output directory.
+    try:
+        artifact_path.relative_to(output_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not artifact_path.exists() or not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    media_type, _ = mimetypes.guess_type(str(artifact_path))
+    return FileResponse(str(artifact_path), media_type=media_type or "application/octet-stream")
+
+
+@app.get("/api/jobs")
+def list_jobs() -> dict:
+    """Return a summary list of all jobs found on disk, newest first."""
+    if not JOBS_DIR.exists():
+        return {"jobs": []}
+
+    jobs = []
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+
+        job_id_str = job_dir.name
+        try:
+            uuid.UUID(job_id_str)
+        except ValueError:
+            continue  # Skip non-UUID directories.
+
+        created_at = job_dir.stat().st_mtime
+
+        # Parse routing metadata from the first two lines of stream.log.
+        stream_log = job_dir / "stream.log"
+        evaluator_key = None
+        route_type = None
+        if stream_log.exists():
+            try:
+                for line in stream_log.read_text(encoding="utf-8", errors="ignore").splitlines()[:2]:
+                    # Normalize both `;` and `,` delimiters used by different writers.
+                    for part in line.replace("[router]", "").replace(",", ";").split(";"):
+                        chunk = part.strip()
+                        if chunk.startswith("evaluator="):
+                            evaluator_key = chunk.split("=", 1)[1].strip()
+                        elif chunk.startswith("route_type="):
+                            route_type = chunk.split("=", 1)[1].strip()
+            except OSError:
+                pass
+
+        output_dir = job_dir / "output"
+        artifact_count = 0
+        if output_dir.exists():
+            try:
+                artifact_count = sum(1 for p in output_dir.glob("*") if p.is_file())
+            except OSError:
+                pass
+
+        # Determine job status: prefer live queue data, fall back to disk inference.
+        status = "unknown"
+        if USE_INMEMORY_QUEUE:
+            job_data = get_local_job(job_id_str)
+            if job_data:
+                status = job_data.get("status", "unknown")
+            elif artifact_count > 0:
+                status = "finished"
+        else:
+            try:
+                queue = get_queue()
+                rq_job = queue.fetch_job(job_id_str)
+                if rq_job is not None:
+                    if rq_job.is_finished:
+                        status = "finished"
+                    elif rq_job.is_failed:
+                        status = "failed"
+                    else:
+                        status = str(rq_job.get_status(refresh=True))
+                elif artifact_count > 0:
+                    status = "finished"
+            except Exception:
+                if artifact_count > 0:
+                    status = "finished"
+
+        jobs.append({
+            "job_id": job_id_str,
+            "status": status,
+            "created_at": created_at,
+            "evaluator_key": evaluator_key,
+            "route_type": route_type,
+            "artifact_count": artifact_count,
+        })
+
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    return {"jobs": jobs}
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{filename}")
