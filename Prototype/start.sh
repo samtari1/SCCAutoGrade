@@ -6,6 +6,7 @@ LOG_DIR="$ROOT_DIR/.logs"
 mkdir -p "$LOG_DIR"
 REDIS_MODE="unknown"
 INMEMORY_MODE="0"
+EXPLICIT_INMEMORY_MODE="${USE_INMEMORY_QUEUE:-0}"
 PIDS=()
 
 stop_stale_processes() {
@@ -47,7 +48,11 @@ echo "[start] Syncing backend Python dependencies..."
 stop_stale_processes
 
 cd "$ROOT_DIR"
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+if [[ "$EXPLICIT_INMEMORY_MODE" =~ ^(1|true|yes|on)$ ]]; then
+  echo "[start] USE_INMEMORY_QUEUE requested explicitly. Starting in-memory mode."
+  INMEMORY_MODE="1"
+  REDIS_MODE="none"
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   echo "[start] Starting Redis via docker compose..."
   docker compose up -d redis >/dev/null
   REDIS_MODE="docker"
@@ -62,9 +67,10 @@ elif command -v redis-server >/dev/null 2>&1; then
   PIDS+=("$!")
   REDIS_MODE="local"
 else
-  echo "[start] Redis is unavailable. Falling back to in-memory queue mode."
-  INMEMORY_MODE="1"
-  REDIS_MODE="none"
+  echo "[start] Redis is unavailable, and automatic in-memory fallback is disabled."
+  echo "[start] Start Docker Desktop, run a local redis-server, or explicitly opt into in-memory mode with:"
+  echo "[start]   USE_INMEMORY_QUEUE=1 ./start.sh"
+  exit 1
 fi
 
 cleanup() {

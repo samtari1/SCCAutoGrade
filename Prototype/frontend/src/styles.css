@@ -88,6 +88,22 @@ label {
   font-weight: 600;
 }
 
+.reuse-hint {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #6b6355;
+}
+
+.reuse-banner {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff7ea;
+  color: #5f5141;
+  font-size: 0.9rem;
+}
+
 input[type="file"] {
   font: inherit;
 }

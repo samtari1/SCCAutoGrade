@@ -47,7 +47,7 @@ class ProgrammingEvaluator(BaseEvaluator):
         return GradingResult(
             job_id=request.job_id,
             evaluator_key=self.key,
-            status="finished",
+            status=str(run_output.get("status", "finished")),
             artifact_files=artifacts,
             confidence=confidence,
             details={

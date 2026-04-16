@@ -35,6 +35,7 @@ function App() {
   const [page, setPage] = useState(routeFromHash);
   const [mainZip, setMainZip] = useState(null);
   const [instructionsHtml, setInstructionsHtml] = useState(null);
+  const [reusableInputs, setReusableInputs] = useState(null);
   const [jobId, setJobId] = useState(() => localStorage.getItem("ag_job_id") || "");
   const [status, setStatus] = useState(() => localStorage.getItem("ag_job_id") ? "queued" : "idle");
   const [message, setMessage] = useState("");
@@ -56,6 +57,7 @@ function App() {
   );
   const [availableEvaluators, setAvailableEvaluators] = useState([]);
   const [reportSortMode, setReportSortMode] = useState("date-desc");
+  const [resumingJobId, setResumingJobId] = useState(null);
   const streamPanelRef = useRef(null);
   const statusSectionRef = useRef(null);
 
@@ -103,6 +105,39 @@ function App() {
   useEffect(() => {
     if (jobId) localStorage.setItem("ag_job_id", jobId);
   }, [jobId]);
+
+  useEffect(() => {
+    if (!jobId || status === "finished") {
+      setReusableInputs(null);
+      return;
+    }
+
+    let isCancelled = false;
+    const loadReusableInputs = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/${jobId}/input-info`);
+        if (!res.ok) {
+          if (!isCancelled) {
+            setReusableInputs(null);
+          }
+          return;
+        }
+        const data = await res.json();
+        if (!isCancelled) {
+          setReusableInputs(data);
+        }
+      } catch {
+        if (!isCancelled) {
+          setReusableInputs(null);
+        }
+      }
+    };
+
+    loadReusableInputs();
+    return () => {
+      isCancelled = true;
+    };
+  }, [jobId, status]);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -165,10 +200,13 @@ function App() {
     return () => clearInterval(timer);
   }, [fetchHistory, page]);
 
-  const canSubmit = useMemo(() => Boolean(mainZip && instructionsHtml), [mainZip, instructionsHtml]);
+  const canSubmit = useMemo(
+    () => Boolean((mainZip && instructionsHtml) || reusableInputs),
+    [mainZip, instructionsHtml, reusableInputs]
+  );
 
   useEffect(() => {
-    if (!jobId || status === "finished" || status === "failed" || streamConnected) {
+    if (!jobId || ["finished", "failed", "stopped", "canceled"].includes(status) || streamConnected) {
       return;
     }
 
@@ -228,7 +266,7 @@ function App() {
         if (Array.isArray(data.artifact_files)) {
           setArtifacts(data.artifact_files);
         }
-        if (data.status === "finished" || data.status === "failed") {
+        if (["finished", "failed", "stopped", "canceled"].includes(data.status)) {
           stream.close();
           fetchHistory();
         }
@@ -273,8 +311,14 @@ function App() {
     setConfidence(null);
 
     const form = new FormData();
-    form.append("main_zip", mainZip);
-    form.append("instructions_html", instructionsHtml);
+    if (mainZip && instructionsHtml) {
+      form.append("main_zip", mainZip);
+      form.append("instructions_html", instructionsHtml);
+    } else if (reusableInputs?.job_id) {
+      form.append("reuse_job_id", reusableInputs.job_id);
+    } else {
+      throw new Error("Select both input files or reuse stored files from an unfinished job");
+    }
     form.append("evaluator_key", evaluatorKey);
     form.append("multi_agent_grading", String(multiAgentGrading));
     form.append("multi_agent_disagreement_threshold", disagreementThreshold || "5.0");
@@ -366,6 +410,41 @@ function App() {
     }
   }
 
+  async function resumeJob(targetJobId) {
+    if (!targetJobId || resumingJobId) {
+      return;
+    }
+
+    setResumingJobId(targetJobId);
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}/resume`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to resume job");
+      }
+
+      if (targetJobId === jobId) {
+        setStatus("queued");
+        setMessage(data.message || `Resuming job - ${data.completed_students_count || 0} students already completed`);
+        setArtifacts([]);
+        setStreamLines([]);
+        
+        setTimeout(() => {
+          statusSectionRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, 100);
+      }
+      fetchHistory();
+    } catch (err) {
+      if (targetJobId === jobId) {
+        setError(err.message || "Failed to resume job");
+      }
+    } finally {
+      setResumingJobId(null);
+    }
+  }
+
   const isActiveJob = RUNNING_STATUSES.has(status);
   const canStopActiveJob = Boolean(jobId) && STOPPABLE_STATUSES.has(status);
 
@@ -424,12 +503,26 @@ function App() {
           <label>
             Main submissions ZIP
             <input type="file" accept=".zip" onChange={(e) => setMainZip(e.target.files?.[0] || null)} />
+            {!mainZip && reusableInputs?.main_zip_name && (
+              <span className="reuse-hint">Stored from unfinished job: {reusableInputs.main_zip_name}</span>
+            )}
           </label>
 
           <label>
             Assignment instructions HTML
             <input type="file" accept=".html,text/html" onChange={(e) => setInstructionsHtml(e.target.files?.[0] || null)} />
+            {!instructionsHtml && reusableInputs?.instructions_html_name && (
+              <span className="reuse-hint">Stored from unfinished job: {reusableInputs.instructions_html_name}</span>
+            )}
           </label>
+
+          {reusableInputs && !(mainZip && instructionsHtml) && (
+            <p className="reuse-banner">
+              Reusing stored inputs from job {reusableInputs.job_id}
+              {reusableInputs.reused_from_job_id ? ` (copied from ${reusableInputs.reused_from_job_id})` : ""}.
+              Select new files above if you want to replace them.
+            </p>
+          )}
 
           <label>
             Evaluator
@@ -526,6 +619,17 @@ function App() {
             disabled={Boolean(cancelingJobIds[jobId])}
           >
             {cancelingJobIds[jobId] ? "Stopping..." : "Stop Grading"}
+          </button>
+        )}
+
+        {jobId && ["stopped", "canceled", "failed"].includes(status) && (
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={() => resumeJob(jobId)}
+            disabled={Boolean(resumingJobId === jobId)}
+          >
+            {resumingJobId === jobId ? "Resuming..." : "Resume Grading"}
           </button>
         )}
 

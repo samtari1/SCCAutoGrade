@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Callable, Dict, List, Optional
 
 from rq import get_current_job
 
@@ -51,8 +51,14 @@ def run_grading_job(
     multi_agent_disagreement_threshold: float = 5.0,
     multi_agent_part_disagreement_threshold: float = 10.0,
     grading_context: str = "",
+    completed_students: List[str] | None = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    progress_callback: Optional[Callable[[str, Optional[List[str]]], None]] = None,
 ) -> Dict[str, Any]:
-    """RQ task that runs backend grading pipeline for one grading run."""
+    """RQ task that runs backend grading pipeline for one grading run.
+    
+    If completed_students is provided, grades only students not in that list.
+    """
     _update_job_meta("started", "Preparing grading run")
     _update_job_meta("started", "Running grading")
 
@@ -62,8 +68,9 @@ def run_grading_job(
     stream_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     with stream_log_path.open("a", encoding="utf-8", buffering=1) as stream_log:
+        resume_note = f" (resuming - skipping {len(completed_students or [])} completed)" if completed_students else ""
         stream_log.write(
-            f"[router] evaluator={evaluator_key}, route_type={route_type}, reason={routing_reason}\n"
+            f"[router] evaluator={evaluator_key}, route_type={route_type}, reason={routing_reason}{resume_note}\n"
         )
         stream_log.flush()
         live_stream = _AutoFlushWriter(stream_log)
@@ -75,18 +82,28 @@ def run_grading_job(
                 instructions_html_path=instructions_html_path,
                 output_dir=output_dir,
                 metadata={
+                    "job_id": job_id,
                     "code_specialty": code_specialty,
                     "multi_agent_grading": multi_agent_grading,
                     "multi_agent_disagreement_threshold": multi_agent_disagreement_threshold,
                     "multi_agent_part_disagreement_threshold": multi_agent_part_disagreement_threshold,
                     "grading_context": grading_context,
+                    "completed_students": completed_students or [],
+                    "cancel_check": cancel_check,
+                    "progress_callback": progress_callback,
                 },
             )
 
-    _update_job_meta("finished", "Grading completed")
+    final_status = result.status or "finished"
+    if final_status == "stopped":
+        _update_job_meta("stopped", "Grading stopped after the current student")
+    elif final_status == "canceled":
+        _update_job_meta("canceled", "Job canceled")
+    else:
+        _update_job_meta("finished", "Grading completed")
     return {
         "job_id": job_id,
-        "status": result.status,
+        "status": final_status,
         "output_dir": str(result.details.get("output_dir", output_dir)),
         "artifact_files": result.artifact_files,
         "evaluator_key": result.evaluator_key,

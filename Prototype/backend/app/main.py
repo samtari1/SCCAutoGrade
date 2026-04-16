@@ -6,7 +6,7 @@ import mimetypes
 from pathlib import Path
 import shutil
 import uuid
-from typing import List
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,19 +63,15 @@ def get_evaluators() -> dict:
 
 @app.post("/api/jobs", response_model=CreateJobResponse)
 async def create_job(
-    main_zip: UploadFile = File(...),
-    instructions_html: UploadFile = File(...),
+    main_zip: Optional[UploadFile] = File(None),
+    instructions_html: Optional[UploadFile] = File(None),
+    reuse_job_id: str = Form(""),
     evaluator_key: str = Form("auto"),
     multi_agent_grading: bool = Form(True),
     multi_agent_disagreement_threshold: float = Form(5.0),
     multi_agent_part_disagreement_threshold: float = Form(10.0),
     grading_context: str = Form(""),
 ) -> CreateJobResponse:
-    if not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
-
-    if not instructions_html.filename or not instructions_html.filename.lower().endswith(".html"):
-        raise HTTPException(status_code=400, detail="instructions_html must be a .html file")
     if multi_agent_disagreement_threshold < 0:
         raise HTTPException(status_code=400, detail="multi_agent_disagreement_threshold must be >= 0")
     if multi_agent_part_disagreement_threshold < 0:
@@ -90,11 +86,51 @@ async def create_job(
 
     zip_path = input_dir / "submissions.zip"
     instructions_path = input_dir / "instructions.html"
+    input_info_path = input_dir / "input_info.json"
 
-    with zip_path.open("wb") as f:
-        shutil.copyfileobj(main_zip.file, f)
-    with instructions_path.open("wb") as f:
-        shutil.copyfileobj(instructions_html.file, f)
+    input_info: Dict[str, Optional[str]] = {
+        "main_zip_name": None,
+        "instructions_html_name": None,
+        "reused_from_job_id": None,
+    }
+
+    reuse_job_id = (reuse_job_id or "").strip()
+    if reuse_job_id:
+        source_input_dir = JOBS_DIR / reuse_job_id / "input"
+        source_zip = source_input_dir / "submissions.zip"
+        source_instructions = source_input_dir / "instructions.html"
+        if not source_zip.exists() or not source_instructions.exists():
+            raise HTTPException(status_code=400, detail="Stored files for reuse were not found")
+
+        shutil.copy2(source_zip, zip_path)
+        shutil.copy2(source_instructions, instructions_path)
+
+        input_info["reused_from_job_id"] = reuse_job_id
+        source_info_path = source_input_dir / "input_info.json"
+        if source_info_path.exists():
+            try:
+                source_info = json.loads(source_info_path.read_text(encoding="utf-8"))
+                input_info["main_zip_name"] = source_info.get("main_zip_name")
+                input_info["instructions_html_name"] = source_info.get("instructions_html_name")
+            except (OSError, json.JSONDecodeError):
+                pass
+        input_info["main_zip_name"] = input_info["main_zip_name"] or "submissions.zip"
+        input_info["instructions_html_name"] = input_info["instructions_html_name"] or "instructions.html"
+    else:
+        if not main_zip or not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
+        if not instructions_html or not instructions_html.filename or not instructions_html.filename.lower().endswith(".html"):
+            raise HTTPException(status_code=400, detail="instructions_html must be a .html file")
+
+        with zip_path.open("wb") as f:
+            shutil.copyfileobj(main_zip.file, f)
+        with instructions_path.open("wb") as f:
+            shutil.copyfileobj(instructions_html.file, f)
+
+        input_info["main_zip_name"] = main_zip.filename
+        input_info["instructions_html_name"] = instructions_html.filename
+
+    input_info_path.write_text(json.dumps(input_info), encoding="utf-8")
 
     instructions_text = instructions_path.read_text(encoding="utf-8", errors="ignore")
     route_type, routing_reason = detect_route_type(instructions_text)
@@ -166,6 +202,35 @@ async def create_job(
         route_type=route_type,
         routing_reason=routing_reason,
     )
+
+
+@app.get("/api/jobs/{job_id}/input-info")
+def get_job_input_info(job_id: str) -> dict:
+    input_dir = JOBS_DIR / job_id / "input"
+    zip_path = input_dir / "submissions.zip"
+    instructions_path = input_dir / "instructions.html"
+    if not zip_path.exists() or not instructions_path.exists():
+        raise HTTPException(status_code=404, detail="Job input files not found")
+
+    info = {
+        "job_id": job_id,
+        "main_zip_name": "submissions.zip",
+        "instructions_html_name": "instructions.html",
+        "reused_from_job_id": None,
+    }
+    input_info_path = input_dir / "input_info.json"
+    if input_info_path.exists():
+        try:
+            stored = json.loads(input_info_path.read_text(encoding="utf-8"))
+            info.update({
+                "main_zip_name": stored.get("main_zip_name") or info["main_zip_name"],
+                "instructions_html_name": stored.get("instructions_html_name") or info["instructions_html_name"],
+                "reused_from_job_id": stored.get("reused_from_job_id"),
+            })
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return info
 
 
 def _build_job_status(job_id: str) -> JobStatusResponse:
@@ -245,7 +310,7 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
         message=message,
         route_type=route_type,
         routing_reason=routing_reason,
-        artifact_files=current_artifacts,
+            artifact_files=current_artifacts,
     )
 
 
@@ -309,6 +374,111 @@ def cancel_job(job_id: str) -> dict:
     }
 
 
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(job_id: str) -> dict:
+    """Resume a stopped or failed grading job, skipping already-completed students."""
+    job_dir = JOBS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    input_dir = job_dir / "input"
+    output_dir = job_dir / "output"
+    
+    if not input_dir.exists() or not (input_dir / "submissions.zip").exists():
+        raise HTTPException(status_code=400, detail="Job submission files not found - cannot resume")
+    
+    # Extract completed student names from existing reports
+    completed_students = []
+    if output_dir.exists():
+        for report_file in output_dir.glob("*_grade_report.html"):
+            # Extract student name from filename by removing the suffix
+            student_name = report_file.name.replace("_grade_report.html", "")
+            completed_students.append(student_name)
+    
+    # Read original job config from stream.log or create minimal config
+    stream_log = job_dir / "stream.log"
+    evaluator_key = "programming"
+    route_type = "code"
+    routing_reason = "Resuming interrupted job"
+    code_specialty = "csharp"
+    
+    if stream_log.exists():
+        first_line = stream_log.read_text(encoding="utf-8", errors="ignore").splitlines()[:1]
+        if first_line:
+            text = first_line[0]
+            if "evaluator=" in text:
+                parts = text.replace("[router]", "").split(";")
+                for part in parts:
+                    chunk = part.strip()
+                    if chunk.startswith("evaluator="):
+                        evaluator_key = chunk.split("=", 1)[1]
+                    elif chunk.startswith("reason="):
+                        routing_reason = chunk.split("=", 1)[1]
+                    elif chunk.startswith("specialty="):
+                        code_specialty = chunk.split("=", 1)[1].split()[0]
+    
+    # Check current job state and allow resume for stopped/failed jobs
+    if USE_INMEMORY_QUEUE:
+        job_info = get_local_job(job_id)
+        if job_info and job_info.get("status") not in {"stopped", "canceled", "failed"}:
+            return {
+                "job_id": job_id,
+                "status": job_info.get("status"),
+                "message": f"Cannot resume job in state '{job_info.get('status')}'. Job must be stopped, canceled, or failed.",
+            }
+        # Submit resume with completed students list
+        submit_local_job(
+            job_id,
+            str(input_dir / "submissions.zip"),
+            str(input_dir / "instructions.html"),
+            str(output_dir),
+            evaluator_key=evaluator_key,
+            route_type=route_type,
+            routing_reason=f"{routing_reason} ({len(completed_students)} previously completed)",
+            code_specialty=code_specialty,
+            multi_agent_grading=True,
+            multi_agent_disagreement_threshold=5.0,
+            multi_agent_part_disagreement_threshold=10.0,
+            grading_context="",
+            completed_students=completed_students,
+        )
+    else:
+        queue = get_queue()
+        job = queue.fetch_job(job_id)
+        if job:
+            status = str(job.get_status(refresh=True))
+            if status not in {"finished", "failed", "stopped", "canceled"}:
+                return {
+                    "job_id": job_id,
+                    "status": status,
+                    "message": f"Cannot resume job in state '{status}'. Job must be stopped, canceled, or failed.",
+                }
+        
+        queue.enqueue(
+            run_grading_job,
+            job_id,
+            str(input_dir / "submissions.zip"),
+            str(input_dir / "instructions.html"),
+            str(output_dir),
+            evaluator_key,
+            route_type,
+            f"{routing_reason} ({len(completed_students)} previously completed)",
+            code_specialty,
+            True,
+            5.0,
+            10.0,
+            "",
+            completed_students,
+        )
+    
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": f"Resume queued - {len(completed_students)} students already completed, remaining students will be graded",
+        "completed_students_count": len(completed_students),
+    }
+
+
 @app.get("/api/jobs/{job_id}/stream")
 async def stream_job(job_id: str):
     stream_path = JOBS_DIR / job_id / "stream.log"
@@ -346,7 +516,7 @@ async def stream_job(job_id: str):
                 last_status_json = status_json
                 emitted = True
 
-            if snapshot.status in {"finished", "failed"}:
+            if snapshot.status in {"finished", "failed", "stopped", "canceled"}:
                 settled_ticks += 1
                 if settled_ticks >= 2:
                     break

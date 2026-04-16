@@ -19,7 +19,15 @@ This starts Redis, backend API, worker, and frontend. Press `Ctrl+C` in the `sta
 
 If Docker Desktop is not running, `start.sh` will try to reuse an existing Redis on port 6379 or start a local `redis-server` process if available.
 
-If Redis is not available at all, `start.sh` now falls back to an in-memory queue mode for development (no worker process required).
+If Redis is not available, `start.sh` now fails by default instead of silently falling back to in-memory mode.
+
+This keeps Stop/Resume behavior consistent with the Redis/RQ worker model.
+
+If you explicitly want single-process in-memory mode for development, start it with:
+
+```bash
+USE_INMEMORY_QUEUE=1 ./start.sh
+```
 
 ## 1) Start Redis
 

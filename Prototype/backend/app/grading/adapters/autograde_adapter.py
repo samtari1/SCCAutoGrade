@@ -60,6 +60,15 @@ class AutoGradeAdapter:
         if hasattr(grader, "grading_context"):
             grader.grading_context = str(metadata.get("grading_context") or "")
 
+        # Support resuming interrupted jobs by skipping already-completed students
+        completed_students = metadata.get("completed_students") or []
+        if hasattr(grader, "completed_students"):
+            grader.completed_students = completed_students
+        if hasattr(grader, "cancel_check"):
+            grader.cancel_check = metadata.get("cancel_check")
+        if hasattr(grader, "progress_callback"):
+            grader.progress_callback = metadata.get("progress_callback")
+
         output_dir.mkdir(parents=True, exist_ok=True)
         grader.grade_all_assignments(
             str(submission_archive_path),
@@ -68,6 +77,7 @@ class AutoGradeAdapter:
         )
 
         return {
+            "status": "stopped" if getattr(grader, "last_run_stopped", False) else "finished",
             "artifact_files": self._collect_artifacts(output_dir),
             "confidence": {
                 "value": 0.9,

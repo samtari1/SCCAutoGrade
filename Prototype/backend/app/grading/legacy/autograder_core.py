@@ -48,6 +48,11 @@ class AutoGrader:
         self.openai_timeout = int(os.getenv('OPENAI_TIMEOUT_SECONDS', '240'))
         self.openai_max_retries = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
         self.openai_retry_backoff = float(os.getenv('OPENAI_RETRY_BACKOFF_SECONDS', '2.0'))
+        # Support for resuming interrupted jobs
+        self.completed_students = []
+        self.cancel_check = None
+        self.progress_callback = None
+        self.last_run_stopped = False
         self.openai_stream = os.getenv('OPENAI_STREAM', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
         self.language_hint = os.getenv('CODE_SPECIALTY', 'csharp').strip().lower()
         self.grading_context = ""
@@ -2234,6 +2239,7 @@ PART SCORES:
     
     def grade_all_assignments(self, main_zip_path: str, instructions_file: str, output_dir: str = None):
         """Grade all assignments from a main zip file"""
+        self.last_run_stopped = False
         if output_dir is None:
             output_dir = os.getcwd()  # Save to current directory (where AutoGrade.py is located)
         
@@ -2245,7 +2251,18 @@ PART SCORES:
             print("No assignments found in the zip file!")
             return
         
-        print(f"Found {len(assignments)} student assignments to grade")
+        # Filter out already-completed students for resumed jobs
+        total_students = len(assignments)
+        if self.completed_students:
+            assignments = {name: content for name, content in assignments.items() if name not in self.completed_students}
+            remaining = len(assignments)
+            print(f"Resuming: {total_students} total students, skipping {total_students - remaining} completed, grading {remaining} remaining")
+        else:
+            print(f"Found {len(assignments)} student assignments to grade")
+        
+        if not assignments:
+            print("All students have been completed!")
+            return
         
         # Get assignment name from instructions file
         assignment_name = Path(instructions_file).stem.replace('-', ' ').replace('_', ' ')
@@ -2255,6 +2272,11 @@ PART SCORES:
         brief_summaries = []
         
         for student_name, submission_content in assignments.items():
+            if callable(self.cancel_check) and self.cancel_check():
+                self.last_run_stopped = True
+                print("⏹ Stop requested. Halting before the next student begins.")
+                break
+
             try:
                 result = self.grade_assignment(student_name, submission_content, instructions_file)
                 
@@ -2280,6 +2302,13 @@ PART SCORES:
                         with open(html_report_file, 'w', encoding='utf-8') as f:
                             f.write(html_report)
                         print(f"💾 Saved HTML report: {html_report_file}")
+                        if student_name not in self.completed_students:
+                            self.completed_students.append(student_name)
+                        if callable(self.progress_callback):
+                            self.progress_callback(
+                                student_name,
+                                [os.path.basename(report_file), os.path.basename(html_report_file)],
+                            )
                     except Exception as html_save_error:
                         print(f"❌ Failed to save HTML report: {html_save_error}")
                     
@@ -2305,7 +2334,10 @@ PART SCORES:
         self.generate_summary_report(results, output_dir, assignment_name)
         self.generate_brief_summary_file(brief_summaries, output_dir, assignment_name)
         
-        print(f"\nGrading complete! Reports saved to: {output_dir}")
+        if self.last_run_stopped:
+            print(f"\nGrading stopped. Partial reports saved to: {output_dir}")
+        else:
+            print(f"\nGrading complete! Reports saved to: {output_dir}")
     
     def generate_brief_summary_file(self, brief_summaries: List[str], output_dir: str, assignment_name: str):
         """Generate a brief summary file with all student grades"""
