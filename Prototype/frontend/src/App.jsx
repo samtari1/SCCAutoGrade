@@ -110,7 +110,7 @@ function App() {
   }, [jobId]);
 
   useEffect(() => {
-    if (!jobId || status === "finished") {
+    if (!jobId) {
       setReusableInputs(null);
       return;
     }
@@ -295,7 +295,38 @@ function App() {
   }, [jobId, status, streamConnected, syncCurrentJobFromHistory]);
 
   useEffect(() => {
-    if (!jobId) {
+    if (page !== ROUTES.grader || !jobId) {
+      return;
+    }
+    if (!["finished", "failed", "stopped", "canceled"].includes(status)) {
+      return;
+    }
+
+    let isCancelled = false;
+    const loadArtifactsForTerminalJob = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/${jobId}/artifacts`);
+        if (!res.ok) {
+          return;
+        }
+        const data = await res.json();
+        if (!isCancelled && Array.isArray(data.files)) {
+          setArtifacts(data.files);
+        }
+      } catch {
+        // Non-blocking: keep current artifacts state.
+      }
+    };
+
+    loadArtifactsForTerminalJob();
+    return () => {
+      isCancelled = true;
+    };
+  }, [page, jobId, status]);
+
+  useEffect(() => {
+    if (!jobId || ["finished", "failed", "stopped", "canceled"].includes(status)) {
+      setStreamConnected(false);
       return;
     }
 
@@ -505,6 +536,65 @@ function App() {
     } finally {
       setResumingJobId(null);
     }
+  }
+
+  async function openJobInGrader(job) {
+    if (!job?.job_id) {
+      return;
+    }
+
+    setMainZip(null);
+    setInstructionsHtml(null);
+    setSubmissionOptions([]);
+    setSelectedSubmissions([]);
+    setLoadingSubmissions(true);
+    setExpandedJobId(null);
+
+    setJobId(job.job_id);
+    setStatus(job.status || "unknown");
+    setActiveEvaluator(job.evaluator_key || "");
+    setRouteType(job.route_type || "");
+    // Keep current artifacts visible until the selected job artifacts are loaded.
+    setStreamLines([]);
+    setError("");
+    setMessage(`Loaded job ${job.job_id}. You can rerun all students or uncheck some to regrade selected submissions.`);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/${job.job_id}/artifacts`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.files)) {
+          setArtifacts(data.files);
+        }
+      }
+    } catch {
+      // Non-blocking: grader page can still be opened without preloaded reports.
+    }
+
+    try {
+      const form = new FormData();
+      form.append("reuse_job_id", job.job_id);
+      const res = await fetch(`${API_BASE}/api/submissions/preview`, {
+        method: "POST",
+        body: form
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const submissions = Array.isArray(data.submissions) ? data.submissions : [];
+        const selected = Array.isArray(data.selected_students) ? data.selected_students : submissions;
+        setSubmissionOptions(submissions);
+        setSelectedSubmissions(selected);
+      }
+    } catch {
+      // Non-blocking: user can still load manual files.
+    } finally {
+      setLoadingSubmissions(false);
+    }
+
+    navigateTo(ROUTES.grader);
+    setTimeout(() => {
+      statusSectionRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
   }
 
   const isActiveJob = RUNNING_STATUSES.has(status);
@@ -862,6 +952,13 @@ function App() {
                           {cancelingJobIds[job.job_id] ? "Stopping..." : "Stop"}
                         </button>
                       )}
+                      <button
+                        type="button"
+                        className="btn-ghost btn-sm"
+                        onClick={() => openJobInGrader(job)}
+                      >
+                        Open in Grader
+                      </button>
                       <button
                         type="button"
                         className="btn-ghost btn-sm"
