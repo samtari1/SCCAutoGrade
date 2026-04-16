@@ -371,7 +371,12 @@ def list_artifacts(job_id: str) -> dict:
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail="Job output not found")
 
-    files: List[str] = sorted([p.name for p in output_dir.glob("*") if p.is_file()])
+    # Sort by modification time (newest first)
+    files: List[str] = sorted(
+        [p.name for p in output_dir.glob("*") if p.is_file()],
+        key=lambda f: (output_dir / f).stat().st_mtime,
+        reverse=True
+    )
     return {"job_id": job_id, "files": files}
 
 

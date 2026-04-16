@@ -136,16 +136,11 @@ button:disabled {
   padding: 0.5rem;
 }
 
-  transition: background-color 0.15s ease;
 a {
   color: var(--accent);
 }
 
 .options-grid {
-.history-row:hover td,
-.history-row:focus-within td {
-  background: #fff3df;
-}
   display: grid;
   gap: 0.7rem;
   border: 1px solid var(--line);
@@ -344,6 +339,13 @@ a {
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+  padding: 0.5rem;
+  border-radius: 6px;
+  transition: background-color 0.15s ease;
+}
+
+.artifact-item:hover {
+  background: #fff3df;
 }
 
 .artifact-name {
@@ -390,10 +392,16 @@ a {
   padding: 0.5rem 0.6rem;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
+  transition: background-color 0.15s ease;
 }
 
 .history-row:last-child td {
   border-bottom: none;
+}
+
+.history-row:hover td,
+.history-row:focus-within td {
+  background: #fff3df;
 }
 
 .history-row-active {

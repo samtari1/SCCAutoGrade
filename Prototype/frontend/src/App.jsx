@@ -55,6 +55,7 @@ function App() {
     "In the overall feedback, try to make it conversational and friendly. Try to acknowledge the strengths before pointing out the weaknesses. When pointing out the weaknesses don't be too harsh."
   );
   const [availableEvaluators, setAvailableEvaluators] = useState([]);
+  const [reportSortMode, setReportSortMode] = useState("date-desc");
   const streamPanelRef = useRef(null);
   const statusSectionRef = useRef(null);
 
@@ -528,28 +529,58 @@ function App() {
           </button>
         )}
 
-        {artifacts.length > 0 && (
+        {artifacts.filter(f => f.endsWith('.html')).length > 0 && (
           <>
-            <h3>Reports</h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.75rem' }}>
+              <h3 style={{ margin: 0 }}>Reports ({artifacts.filter(f => f.endsWith('.html')).length})</h3>
+              <select
+                value={reportSortMode}
+                onChange={(e) => setReportSortMode(e.target.value)}
+                style={{
+                  padding: '0.35rem 0.5rem',
+                  fontSize: '0.85rem',
+                  borderRadius: '6px',
+                  border: '1px solid var(--line)',
+                  background: '#fff',
+                  fontFamily: 'inherit',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="date-desc">Latest first</option>
+                <option value="date-asc">Oldest first</option>
+                <option value="name-asc">Name (A-Z)</option>
+                <option value="name-desc">Name (Z-A)</option>
+              </select>
+            </div>
             <div className="artifact-list">
-              {artifacts.map((file) => (
-                <div key={file} className="artifact-item">
-                  <span className="artifact-name">{file}</span>
-                  {file.endsWith(".html") && (
-                    <button type="button" className="btn-ghost btn-sm" onClick={() => openReport(jobId, file)}>
-                      View
-                    </button>
-                  )}
-                  <a
-                    href={`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-link btn-sm"
-                  >
-                    Download
-                  </a>
-                </div>
-              ))}
+              {(() => {
+                let filtered = artifacts.filter(f => f.endsWith('.html'));
+                if (reportSortMode === 'name-asc') {
+                  filtered = filtered.sort((a, b) => a.localeCompare(b));
+                } else if (reportSortMode === 'name-desc') {
+                  filtered = filtered.sort((a, b) => b.localeCompare(a));
+                } else if (reportSortMode === 'date-asc') {
+                  filtered = filtered.reverse();
+                }
+                return filtered.map((file) => (
+                  <div key={file} className="artifact-item">
+                    <span className="artifact-name">{file}</span>
+                    {file.endsWith(".html") && (
+                      <button type="button" className="btn-ghost btn-sm" onClick={() => openReport(jobId, file)}>
+                        View
+                      </button>
+                    )}
+                    <a
+                      href={`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn-link btn-sm"
+                    >
+                      Download
+                    </a>
+                  </div>
+                ));
+              })()}
             </div>
           </>
         )}
@@ -623,33 +654,68 @@ function App() {
                       <td colSpan={5}>
                         {!historyArtifacts[job.job_id] ? (
                           <span className="history-loading">Loading…</span>
-                        ) : historyArtifacts[job.job_id].length === 0 ? (
+                        ) : historyArtifacts[job.job_id].filter(f => f.endsWith('.html')).length === 0 ? (
                           <span className="history-empty-text">No reports yet.</span>
                         ) : (
-                          <div className="artifact-list">
-                            {historyArtifacts[job.job_id].map((f) => (
-                              <div key={f} className="artifact-item">
-                                <span className="artifact-name">{f}</span>
-                                {f.endsWith(".html") && (
-                                  <button
-                                    type="button"
-                                    className="btn-ghost btn-sm"
-                                    onClick={() => openReport(job.job_id, f)}
-                                  >
-                                    View
-                                  </button>
-                                )}
-                                <a
-                                  href={`${API_BASE}/api/jobs/${job.job_id}/artifacts/${encodeURIComponent(f)}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="btn-link btn-sm"
-                                >
-                                  Download
-                                </a>
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.75rem' }}>
+                              <div style={{ fontSize: '0.9rem', fontWeight: '600' }}>
+                                Reports ({historyArtifacts[job.job_id].filter(f => f.endsWith('.html')).length})
                               </div>
-                            ))}
-                          </div>
+                              <select
+                                value={reportSortMode}
+                                onChange={(e) => setReportSortMode(e.target.value)}
+                                style={{
+                                  padding: '0.35rem 0.5rem',
+                                  fontSize: '0.85rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid var(--line)',
+                                  background: '#fff',
+                                  fontFamily: 'inherit',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <option value="date-desc">Latest first</option>
+                                <option value="date-asc">Oldest first</option>
+                                <option value="name-asc">Name (A-Z)</option>
+                                <option value="name-desc">Name (Z-A)</option>
+                              </select>
+                            </div>
+                            <div className="artifact-list">
+                              {(() => {
+                                let filtered = historyArtifacts[job.job_id].filter(f => f.endsWith('.html'));
+                                if (reportSortMode === 'name-asc') {
+                                  filtered = filtered.sort((a, b) => a.localeCompare(b));
+                                } else if (reportSortMode === 'name-desc') {
+                                  filtered = filtered.sort((a, b) => b.localeCompare(a));
+                                } else if (reportSortMode === 'date-asc') {
+                                  filtered = filtered.reverse();
+                                }
+                                return filtered.map((f) => (
+                                  <div key={f} className="artifact-item">
+                                    <span className="artifact-name">{f}</span>
+                                    {f.endsWith(".html") && (
+                                      <button
+                                        type="button"
+                                        className="btn-ghost btn-sm"
+                                        onClick={() => openReport(job.job_id, f)}
+                                      >
+                                        View
+                                      </button>
+                                    )}
+                                    <a
+                                      href={`${API_BASE}/api/jobs/${job.job_id}/artifacts/${encodeURIComponent(f)}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="btn-link btn-sm"
+                                    >
+                                      Download
+                                    </a>
+                                  </div>
+                                ));
+                              })()}
+                            </div>
+                          </>
                         )}
                       </td>
                     </tr>
