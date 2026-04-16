@@ -36,6 +36,9 @@ function App() {
   const [mainZip, setMainZip] = useState(null);
   const [instructionsHtml, setInstructionsHtml] = useState(null);
   const [reusableInputs, setReusableInputs] = useState(null);
+  const [submissionOptions, setSubmissionOptions] = useState([]);
+  const [selectedSubmissions, setSelectedSubmissions] = useState([]);
+  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [jobId, setJobId] = useState(() => localStorage.getItem("ag_job_id") || "");
   const [status, setStatus] = useState(() => localStorage.getItem("ag_job_id") ? "queued" : "idle");
   const [message, setMessage] = useState("");
@@ -139,6 +142,59 @@ function App() {
     };
   }, [jobId, status]);
 
+  useEffect(() => {
+    if (!mainZip && !reusableInputs?.job_id) {
+      setSubmissionOptions([]);
+      setSelectedSubmissions([]);
+      setLoadingSubmissions(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const loadSubmissionPreview = async () => {
+      setLoadingSubmissions(true);
+      try {
+        const form = new FormData();
+        if (mainZip) {
+          form.append("main_zip", mainZip);
+        } else if (reusableInputs?.job_id) {
+          form.append("reuse_job_id", reusableInputs.job_id);
+        }
+
+        const res = await fetch(`${API_BASE}/api/submissions/preview`, {
+          method: "POST",
+          body: form
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Failed to preview submissions");
+        }
+
+        if (!isCancelled) {
+          const submissions = Array.isArray(data.submissions) ? data.submissions : [];
+          const selected = Array.isArray(data.selected_students) ? data.selected_students : submissions;
+          setSubmissionOptions(submissions);
+          setSelectedSubmissions(selected);
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          setSubmissionOptions([]);
+          setSelectedSubmissions([]);
+          setError((prev) => prev || err.message || "Failed to preview submissions");
+        }
+      } finally {
+        if (!isCancelled) {
+          setLoadingSubmissions(false);
+        }
+      }
+    };
+
+    loadSubmissionPreview();
+    return () => {
+      isCancelled = true;
+    };
+  }, [mainZip, reusableInputs]);
+
   const fetchHistory = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/jobs`);
@@ -201,8 +257,11 @@ function App() {
   }, [fetchHistory, page]);
 
   const canSubmit = useMemo(
-    () => Boolean((mainZip && instructionsHtml) || reusableInputs),
-    [mainZip, instructionsHtml, reusableInputs]
+    () => Boolean(
+      ((mainZip && instructionsHtml) || reusableInputs) &&
+      (submissionOptions.length === 0 || selectedSubmissions.length > 0)
+    ),
+    [mainZip, instructionsHtml, reusableInputs, submissionOptions.length, selectedSubmissions.length]
   );
 
   useEffect(() => {
@@ -318,6 +377,9 @@ function App() {
       form.append("reuse_job_id", reusableInputs.job_id);
     } else {
       throw new Error("Select both input files or reuse stored files from an unfinished job");
+    }
+    if (submissionOptions.length > 0) {
+      form.append("selected_students", JSON.stringify(selectedSubmissions));
     }
     form.append("evaluator_key", evaluatorKey);
     form.append("multi_agent_grading", String(multiAgentGrading));
@@ -522,6 +584,62 @@ function App() {
               {reusableInputs.reused_from_job_id ? ` (copied from ${reusableInputs.reused_from_job_id})` : ""}.
               Select new files above if you want to replace them.
             </p>
+          )}
+
+          {(loadingSubmissions || submissionOptions.length > 0) && (
+            <section className="submission-picker" aria-label="Submission selection">
+              <div className="submission-toolbar">
+                <strong>
+                  Submissions
+                  {submissionOptions.length > 0 ? ` (${selectedSubmissions.length}/${submissionOptions.length} selected)` : ""}
+                </strong>
+                {submissionOptions.length > 0 && (
+                  <div className="submission-actions">
+                    <button
+                      type="button"
+                      className="btn-ghost btn-sm"
+                      onClick={() => setSelectedSubmissions(submissionOptions)}
+                    >
+                      Check all
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost btn-sm"
+                      onClick={() => setSelectedSubmissions([])}
+                    >
+                      Uncheck all
+                    </button>
+                  </div>
+                )}
+              </div>
+              {loadingSubmissions ? (
+                <p className="submission-empty">Loading submissions from ZIP...</p>
+              ) : submissionOptions.length === 0 ? (
+                <p className="submission-empty">No submissions found to preview.</p>
+              ) : (
+                <div className="submission-list">
+                  {submissionOptions.map((student) => {
+                    const checked = selectedSubmissions.includes(student);
+                    return (
+                      <label key={student} className="submission-option">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedSubmissions((prev) => [...prev, student]);
+                            } else {
+                              setSelectedSubmissions((prev) => prev.filter((item) => item !== student));
+                            }
+                          }}
+                        />
+                        <span>{student}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           )}
 
           <label>

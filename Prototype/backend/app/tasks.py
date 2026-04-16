@@ -52,6 +52,7 @@ def run_grading_job(
     multi_agent_part_disagreement_threshold: float = 10.0,
     grading_context: str = "",
     completed_students: List[str] | None = None,
+    selected_students: List[str] | None = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[str, Optional[List[str]]], None]] = None,
 ) -> Dict[str, Any]:
@@ -89,6 +90,7 @@ def run_grading_job(
                     "multi_agent_part_disagreement_threshold": multi_agent_part_disagreement_threshold,
                     "grading_context": grading_context,
                     "completed_students": completed_students or [],
+                    "selected_students": selected_students or [],
                     "cancel_check": cancel_check,
                     "progress_callback": progress_callback,
                 },

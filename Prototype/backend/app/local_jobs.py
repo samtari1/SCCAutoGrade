@@ -24,6 +24,7 @@ def submit_local_job(
     multi_agent_part_disagreement_threshold: float,
     grading_context: str,
     completed_students: Optional[List[str]] = None,
+    selected_students: Optional[List[str]] = None,
 ) -> None:
     existing_job = get_local_job(job_id) or {}
     with _LOCK:
@@ -85,6 +86,7 @@ def submit_local_job(
                 multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
                 grading_context=grading_context,
                 completed_students=completed_students,
+                selected_students=selected_students,
                 cancel_check=_cancel_check,
                 progress_callback=_progress_callback,
             )

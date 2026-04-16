@@ -64,6 +64,9 @@ class AutoGradeAdapter:
         completed_students = metadata.get("completed_students") or []
         if hasattr(grader, "completed_students"):
             grader.completed_students = completed_students
+        selected_students = metadata.get("selected_students") or []
+        if hasattr(grader, "selected_students"):
+            grader.selected_students = selected_students
         if hasattr(grader, "cancel_check"):
             grader.cancel_check = metadata.get("cancel_check")
         if hasattr(grader, "progress_callback"):

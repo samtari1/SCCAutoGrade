@@ -5,6 +5,7 @@ import json
 import mimetypes
 from pathlib import Path
 import shutil
+import tempfile
 import uuid
 from typing import Dict, List, Optional
 
@@ -21,8 +22,26 @@ from .schemas import CreateJobResponse, JobStatusResponse
 from .settings import JOBS_DIR, USE_INMEMORY_QUEUE, ensure_directories
 from .tasks import run_grading_job
 from .grading import register_default_evaluators
+from .grading.legacy import AutoGrader
 from .grading.registry import get_evaluator, list_evaluators
 from .grading.routing import detect_code_specialty, detect_route_type, map_route_to_evaluator
+
+
+def _parse_selected_students(raw_value: str) -> Optional[List[str]]:
+    raw_value = (raw_value or "").strip()
+    if not raw_value:
+        return None
+
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="selected_students must be valid JSON") from exc
+
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise HTTPException(status_code=400, detail="selected_students must be a JSON array of strings")
+
+    cleaned = [item.strip() for item in parsed if item.strip()]
+    return list(dict.fromkeys(cleaned))
 
 
 app = FastAPI(title="AutoGrade API", version="0.1.0")
@@ -66,6 +85,7 @@ async def create_job(
     main_zip: Optional[UploadFile] = File(None),
     instructions_html: Optional[UploadFile] = File(None),
     reuse_job_id: str = Form(""),
+    selected_students: str = Form(""),
     evaluator_key: str = Form("auto"),
     multi_agent_grading: bool = Form(True),
     multi_agent_disagreement_threshold: float = Form(5.0),
@@ -93,6 +113,7 @@ async def create_job(
         "instructions_html_name": None,
         "reused_from_job_id": None,
     }
+    parsed_selected_students = _parse_selected_students(selected_students)
 
     reuse_job_id = (reuse_job_id or "").strip()
     if reuse_job_id:
@@ -112,6 +133,8 @@ async def create_job(
                 source_info = json.loads(source_info_path.read_text(encoding="utf-8"))
                 input_info["main_zip_name"] = source_info.get("main_zip_name")
                 input_info["instructions_html_name"] = source_info.get("instructions_html_name")
+                if parsed_selected_students is None:
+                    parsed_selected_students = source_info.get("selected_students")
             except (OSError, json.JSONDecodeError):
                 pass
         input_info["main_zip_name"] = input_info["main_zip_name"] or "submissions.zip"
@@ -129,6 +152,11 @@ async def create_job(
 
         input_info["main_zip_name"] = main_zip.filename
         input_info["instructions_html_name"] = instructions_html.filename
+
+    if parsed_selected_students is not None and not parsed_selected_students:
+        raise HTTPException(status_code=400, detail="Select at least one student submission")
+
+    input_info["selected_students"] = parsed_selected_students
 
     input_info_path.write_text(json.dumps(input_info), encoding="utf-8")
 
@@ -174,6 +202,7 @@ async def create_job(
             multi_agent_disagreement_threshold=multi_agent_disagreement_threshold,
             multi_agent_part_disagreement_threshold=multi_agent_part_disagreement_threshold,
             grading_context=grading_context,
+            selected_students=parsed_selected_students,
         )
     else:
         queue = get_queue()
@@ -191,6 +220,8 @@ async def create_job(
             multi_agent_disagreement_threshold,
             multi_agent_part_disagreement_threshold,
             grading_context,
+            None,
+            parsed_selected_students,
             job_id=job_id,
             job_timeout="2h",
         )
@@ -217,6 +248,7 @@ def get_job_input_info(job_id: str) -> dict:
         "main_zip_name": "submissions.zip",
         "instructions_html_name": "instructions.html",
         "reused_from_job_id": None,
+        "selected_students": None,
     }
     input_info_path = input_dir / "input_info.json"
     if input_info_path.exists():
@@ -226,11 +258,59 @@ def get_job_input_info(job_id: str) -> dict:
                 "main_zip_name": stored.get("main_zip_name") or info["main_zip_name"],
                 "instructions_html_name": stored.get("instructions_html_name") or info["instructions_html_name"],
                 "reused_from_job_id": stored.get("reused_from_job_id"),
+                "selected_students": stored.get("selected_students"),
             })
         except (OSError, json.JSONDecodeError):
             pass
 
     return info
+
+
+@app.post("/api/submissions/preview")
+async def preview_submissions(
+    main_zip: Optional[UploadFile] = File(None),
+    reuse_job_id: str = Form(""),
+) -> dict:
+    reuse_job_id = (reuse_job_id or "").strip()
+    selected_students = None
+
+    if reuse_job_id:
+        source_input_dir = JOBS_DIR / reuse_job_id / "input"
+        zip_path = source_input_dir / "submissions.zip"
+        if not zip_path.exists():
+            raise HTTPException(status_code=404, detail="Stored submissions zip not found")
+
+        source_info_path = source_input_dir / "input_info.json"
+        if source_info_path.exists():
+            try:
+                stored = json.loads(source_info_path.read_text(encoding="utf-8"))
+                selected_students = stored.get("selected_students")
+            except (OSError, json.JSONDecodeError):
+                selected_students = None
+
+        grader = AutoGrader()
+        assignments = grader.extract_all_assignments(str(zip_path))
+        submissions = sorted(assignments.keys())
+        return {
+            "submissions": submissions,
+            "selected_students": [s for s in (selected_students or submissions) if s in submissions],
+        }
+
+    if not main_zip or not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_zip = Path(temp_dir) / "preview.zip"
+        with temp_zip.open("wb") as f:
+            shutil.copyfileobj(main_zip.file, f)
+
+        grader = AutoGrader()
+        assignments = grader.extract_all_assignments(str(temp_zip))
+        submissions = sorted(assignments.keys())
+        return {
+            "submissions": submissions,
+            "selected_students": submissions,
+        }
 
 
 def _build_job_status(job_id: str) -> JobStatusResponse:
@@ -389,6 +469,7 @@ def resume_job(job_id: str) -> dict:
     
     # Extract completed student names from existing reports
     completed_students = []
+    selected_students = None
     if output_dir.exists():
         for report_file in output_dir.glob("*_grade_report.html"):
             # Extract student name from filename by removing the suffix
@@ -416,6 +497,14 @@ def resume_job(job_id: str) -> dict:
                         routing_reason = chunk.split("=", 1)[1]
                     elif chunk.startswith("specialty="):
                         code_specialty = chunk.split("=", 1)[1].split()[0]
+
+    input_info_path = input_dir / "input_info.json"
+    if input_info_path.exists():
+        try:
+            stored = json.loads(input_info_path.read_text(encoding="utf-8"))
+            selected_students = stored.get("selected_students")
+        except (OSError, json.JSONDecodeError):
+            selected_students = None
     
     # Check current job state and allow resume for stopped/failed jobs
     if USE_INMEMORY_QUEUE:
@@ -441,6 +530,7 @@ def resume_job(job_id: str) -> dict:
             multi_agent_part_disagreement_threshold=10.0,
             grading_context="",
             completed_students=completed_students,
+            selected_students=selected_students,
         )
     else:
         queue = get_queue()
@@ -469,6 +559,7 @@ def resume_job(job_id: str) -> dict:
             10.0,
             "",
             completed_students,
+            selected_students,
         )
     
     return {
@@ -613,7 +704,9 @@ def list_jobs() -> dict:
         artifact_count = 0
         if output_dir.exists():
             try:
-                artifact_count = sum(1 for p in output_dir.glob("*") if p.is_file())
+                artifact_count = sum(
+                    1 for p in output_dir.glob("*") if p.is_file() and p.suffix.lower() == ".html"
+                )
             except OSError:
                 pass
 

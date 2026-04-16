@@ -50,6 +50,7 @@ class AutoGrader:
         self.openai_retry_backoff = float(os.getenv('OPENAI_RETRY_BACKOFF_SECONDS', '2.0'))
         # Support for resuming interrupted jobs
         self.completed_students = []
+        self.selected_students = []
         self.cancel_check = None
         self.progress_callback = None
         self.last_run_stopped = False
@@ -478,6 +479,36 @@ class AutoGrader:
                 print(f"  ⚠️  No {self._language_display_name()} submission found for: {student_name}")
 
         return assignments
+
+    def list_submission_students(self, main_zip_path: str) -> List[str]:
+        """List student names represented by top-level submission entries in the zip."""
+        students = []
+        processed_students = set()
+
+        zip_path_obj = Path(main_zip_path)
+        extract_dir = zip_path_obj.parent / zip_path_obj.stem
+        if extract_dir.exists():
+            print(f"📂 Submissions folder already exists, reusing: {extract_dir}")
+        else:
+            print(f"📦 Extracting main zip to: {extract_dir}")
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(main_zip_path, 'r') as main_zip:
+                main_zip.extractall(str(extract_dir))
+
+        for student_entry in sorted(extract_dir.iterdir()):
+            if student_entry.name.startswith('.'):
+                continue
+
+            student_name = self.extract_student_name(student_entry.name)
+            normalized_name = self.normalize_student_name(student_name)
+            if not student_name or normalized_name in processed_students:
+                continue
+
+            if student_entry.is_dir() or student_entry.suffix.lower() in {'.zip', '.7z'}:
+                students.append(student_name)
+                processed_students.add(normalized_name)
+
+        return students
     
     def extract_student_name(self, filename_or_path: str) -> str:
         """Extract student name from file/folder name"""
@@ -2253,6 +2284,15 @@ PART SCORES:
         
         # Filter out already-completed students for resumed jobs
         total_students = len(assignments)
+        if self.selected_students:
+            selected_names = {self.normalize_student_name(name) for name in self.selected_students}
+            assignments = {
+                name: content for name, content in assignments.items()
+                if self.normalize_student_name(name) in selected_names
+            }
+            print(f"Selected {len(assignments)} student assignment(s) from {total_students} discovered submission(s)")
+            total_students = len(assignments)
+
         if self.completed_students:
             assignments = {name: content for name, content in assignments.items() if name not in self.completed_students}
             remaining = len(assignments)
