@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import mimetypes
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import uuid
@@ -42,6 +44,45 @@ def _parse_selected_students(raw_value: str) -> Optional[List[str]]:
 
     cleaned = [item.strip() for item in parsed if item.strip()]
     return list(dict.fromkeys(cleaned))
+
+
+def _derive_assignment_name(job_dir: Path) -> Optional[str]:
+    input_dir = job_dir / "input"
+    info_path = input_dir / "input_info.json"
+
+    if info_path.exists():
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            if isinstance(info.get("assignment_name"), str) and info.get("assignment_name").strip():
+                return info.get("assignment_name").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    instructions_path = input_dir / "instructions.html"
+    if instructions_path.exists():
+        try:
+            instructions_html = instructions_path.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"<h1[^>]*>(.*?)</h1>", instructions_html, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                title = re.sub(r"<[^>]+>", "", match.group(1))
+                title = html.unescape(title).strip()
+                if title:
+                    return title
+        except OSError:
+            pass
+
+    if info_path.exists():
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            zip_name = str(info.get("main_zip_name") or "").strip()
+            if zip_name:
+                stem = Path(zip_name).stem.replace("_", " ").replace("-", " ").strip()
+                if stem:
+                    return stem
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return None
 
 
 app = FastAPI(title="AutoGrade API", version="0.1.0")
@@ -315,17 +356,33 @@ async def preview_submissions(
 
 def _build_job_status(job_id: str) -> JobStatusResponse:
     output_dir = JOBS_DIR / job_id / "output"
+    def sort_artifacts_by_mtime(artifact_names: List[str]) -> List[str]:
+        # Keep newest files first so frontend "Latest first" aligns with actual artifact times.
+        unique_names = list(dict.fromkeys(artifact_names))
+
+        def sort_key(name: str) -> tuple[float, str]:
+            path = output_dir / name
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            return (mtime, name.lower())
+
+        return sorted(unique_names, key=sort_key, reverse=True)
+
     current_artifacts: List[str] = []
     if output_dir.exists():
-        current_artifacts = sorted([p.name for p in output_dir.glob("*") if p.is_file()])
+        current_artifacts = sort_artifacts_by_mtime(
+            [p.name for p in output_dir.glob("*") if p.is_file()]
+        )
 
     if USE_INMEMORY_QUEUE:
         job_data = get_local_job(job_id)
         if not job_data:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        artifact_files = sorted(
-            set(job_data.get("artifact_files", [])) | set(current_artifacts)
+        artifact_files = sort_artifacts_by_mtime(
+            [*job_data.get("artifact_files", []), *current_artifacts]
         )
 
         return JobStatusResponse(
@@ -349,8 +406,8 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
 
     if job.is_finished:
         result = job.result or {}
-        artifact_files = sorted(
-            set(result.get("artifact_files", [])) | set(current_artifacts)
+        artifact_files = sort_artifacts_by_mtime(
+            [*result.get("artifact_files", []), *current_artifacts]
         )
         return JobStatusResponse(
             job_id=job_id,
@@ -687,6 +744,7 @@ def list_jobs() -> dict:
         stream_log = job_dir / "stream.log"
         evaluator_key = None
         route_type = None
+        assignment_name = _derive_assignment_name(job_dir)
         if stream_log.exists():
             try:
                 for line in stream_log.read_text(encoding="utf-8", errors="ignore").splitlines()[:2]:
@@ -739,6 +797,7 @@ def list_jobs() -> dict:
             "job_id": job_id_str,
             "status": status,
             "created_at": created_at,
+            "assignment_name": assignment_name,
             "evaluator_key": evaluator_key,
             "route_type": route_type,
             "artifact_count": artifact_count,

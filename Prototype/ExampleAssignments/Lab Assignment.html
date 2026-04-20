@@ -1,0 +1,160 @@
+<h1>Lab Assignment: Events</h1>
+
+<h2>Objectives</h2>
+<p>By the end of this lab, you will be able to:</p>
+<ul>
+    <li>Create and drop MySQL events</li>
+    <li>Use one-time (AT) events</li>
+    <li>Use recurring (EVERY) events with optional STARTS and ENDS</li>
+    <li>Enable and disable events</li>
+    <li>Automate tasks such as cleanup and logging</li>
+    <li>Understand the event scheduler in MySQL</li>
+</ul>
+
+<h2>Prerequisites</h2>
+<ul>
+    <li>MySQL installed and running</li>
+    <li>MySQL Workbench (or similar SQL client)</li>
+    <li>Basic knowledge of CREATE, INSERT, DELETE, SELECT statements</li>
+    <li>Familiarity with previous Triggers lab</li>
+</ul>
+
+<hr>
+
+<h2>Important Requirement</h2>
+<p>
+    For <strong>every task</strong>, you must write your observations directly in your SQL file
+    using SQL comments (<code>-- like this</code>).
+    Explain what happened, what you expected, and whether the result matched your expectation.
+</p>
+
+<hr>
+
+<h2>Part 0: Setup</h2>
+
+<p>Create a new database and two tables:</p>
+<ul>
+    <li><code>logs</code> — with columns for a log ID, message, and timestamp</li>
+    <li><code>event_demo</code> — with a column to store timestamps</li>
+</ul>
+
+<p>Insert some initial test data into the <code>logs</code> table.</p>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>How many rows did you insert?</li>
+    <li>What is the current timestamp in your test rows?</li>
+</ul>
+
+<hr>
+
+<h2>Part 1: One-Time Event (AT)</h2>
+
+<p><strong>Task 1:</strong> Create a one-time event that deletes logs older than 30 days at a future timestamp.</p>
+
+<p><strong>Requirements:</strong></p>
+<ul>
+    <li>Name the event appropriately</li>
+    <li>Schedule it using <code>AT</code> at least 1 minute in the future</li>
+    <li>Delete rows based on <code>log_date</code></li>
+</ul>
+
+<p>After the event runs, check the <code>logs</code> table.</p>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>Did the old logs get deleted as expected?</li>
+    <li>What happens if the event is scheduled in the past?</li>
+</ul>
+
+<hr>
+
+<h2>Part 2: Recurring Event (EVERY)</h2>
+
+<p><strong>Task 2:</strong> Create a recurring event that logs the current timestamp into <code>event_demo</code> every minute.</p>
+
+<p><strong>Requirements:</strong></p>
+<ul>
+    <li>Name the event appropriately</li>
+    <li>Schedule it using <code>EVERY 1 MINUTE</code></li>
+    <li>Insert the current timestamp into the <code>run_time</code> column</li>
+</ul>
+
+<p>Test using SELECT to see the inserted timestamps.</p>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>How many rows were inserted after 3 minutes?</li>
+    <li>Why do you need to enable the event scheduler?</li>
+</ul>
+
+<hr>
+
+<h2>Part 3: Recurring Event with STARTS and ENDS</h2>
+
+<p><strong>Task 3:</strong> Modify the recurring event so it only runs between specific start and end times.</p>
+
+<p><strong>Requirements:</strong></p>
+<ul>
+    <li>Set <code>STARTS</code> to the current time</li>
+    <li>Set <code>ENDS</code> to a few minutes later</li>
+    <li>Ensure it still inserts timestamps into <code>event_demo</code></li>
+</ul>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>How many rows were inserted during the scheduled window?</li>
+    <li>What happened after the end time passed?</li>
+</ul>
+
+<hr>
+
+<h2>Part 4: Enable / Disable Event</h2>
+
+<p><strong>Task 4:</strong> Disable your recurring event temporarily and observe that it stops executing, then re-enable it.</p>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>What happened while the event was disabled?</li>
+    <li>What happened after enabling it again?</li>
+</ul>
+
+<hr>
+
+<h2>Part 5: Multiple SQL Statements in an Event</h2>
+
+<p><strong>Task 5:</strong> Create an event that does more than one action, e.g., deletes old logs and logs the action into <code>event_demo</code> in the same event.</p>
+
+<p><strong>Requirements:</strong></p>
+<ul>
+    <li>Use a block with multiple statements</li>
+</ul>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>Were both statements executed successfully?</li>
+    <li>What happens if one statement fails?</li>
+</ul>
+
+<hr>
+
+<h2>Part 6: Dropping Events and Cleaning Up</h2>
+
+<p><strong>Task 6:</strong> Safely drop all events you created to avoid them running indefinitely.</p>
+
+<p><strong>Write SQL comments answering:</strong></p>
+<ul>
+    <li>Were all events removed successfully?</li>
+    <li>What happens if you try to drop an event that does not exist?</li>
+    <li>Why is it important to clean up recurring events after testing?</li>
+</ul>
+
+<hr>
+
+<h2><b>Submission Instructions</b></h2>
+<ul>
+    <li>Submit ONE SQL file containing all commands and comments</li>
+    <li>Clearly label each part using SQL comments</li>
+    <li>Name the file <strong>FirstName_LastName_Events.sql</strong></li>
+    <li>Your grade depends on correctness AND quality of observations</li>
+</ul>

@@ -620,21 +620,22 @@ function App() {
       )}
 
       <section className="hero">
-        <h1>AutoGrade Control Panel</h1>
+        <p className="hero-kicker">Grading Operations</p>
+        <h1>AutoGrade Command Center</h1>
         <p>
           {page === ROUTES.grader
-            ? "Upload submissions and assignment instructions, then track grading in real time."
-            : "Browse all past grading batches, monitor running jobs, and open reports."}
+            ? "Launch a grading run with your submissions and instructions, then follow every step live."
+            : "Review every grading batch, reopen reports, and jump any run back into the Grader."}
         </p>
       </section>
 
       <section className="card nav-card">
-        <div className="top-nav" role="tablist" aria-label="Main pages">
           <button
             type="button"
             className={page === ROUTES.grader ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
             onClick={() => navigateTo(ROUTES.grader)}
             aria-current={page === ROUTES.grader ? "page" : undefined}
+            aria-selected={page === ROUTES.grader}
           >
             Grading
           </button>
@@ -643,10 +644,10 @@ function App() {
             className={page === ROUTES.history ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
             onClick={() => navigateTo(ROUTES.history)}
             aria-current={page === ROUTES.history ? "page" : undefined}
+            aria-selected={page === ROUTES.history}
           >
             History
           </button>
-        </div>
       </section>
 
       {page === ROUTES.grader && (
@@ -843,20 +844,12 @@ function App() {
 
         {artifacts.filter(f => f.endsWith('.html')).length > 0 && (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.75rem' }}>
-              <h3 style={{ margin: 0 }}>Reports ({artifacts.filter(f => f.endsWith('.html')).length})</h3>
+            <div className="section-toolbar">
+              <h3 className="section-title">Reports ({artifacts.filter(f => f.endsWith('.html')).length})</h3>
               <select
                 value={reportSortMode}
                 onChange={(e) => setReportSortMode(e.target.value)}
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.85rem',
-                  borderRadius: '6px',
-                  border: '1px solid var(--line)',
-                  background: '#fff',
-                  fontFamily: 'inherit',
-                  cursor: 'pointer',
-                }}
+                className="sort-select"
               >
                 <option value="date-desc">Latest first</option>
                 <option value="date-asc">Oldest first</option>
@@ -928,6 +921,7 @@ function App() {
               <tr>
                 <th>Time</th>
                 <th>Status</th>
+                <th>Assignment</th>
                 <th>Evaluator</th>
                 <th>Reports</th>
                 <th></th>
@@ -939,6 +933,7 @@ function App() {
                   <tr className="history-row">
                     <td className="history-time">{relTime(job.created_at)}</td>
                     <td><StatusBadge status={job.status} /></td>
+                    <td className="history-assignment">{job.assignment_name || "—"}</td>
                     <td className="history-eval">{job.evaluator_key || "—"}</td>
                     <td>{job.artifact_count}</td>
                     <td className="history-actions">
@@ -970,29 +965,21 @@ function App() {
                   </tr>
                   {expandedJobId === job.job_id && (
                     <tr className="history-expand-row">
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         {!historyArtifacts[job.job_id] ? (
                           <span className="history-loading">Loading…</span>
                         ) : historyArtifacts[job.job_id].filter(f => f.endsWith('.html')).length === 0 ? (
                           <span className="history-empty-text">No reports yet.</span>
                         ) : (
                           <>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.75rem' }}>
-                              <div style={{ fontSize: '0.9rem', fontWeight: '600' }}>
+                            <div className="section-toolbar">
+                              <div className="section-title section-title-sm">
                                 Reports ({historyArtifacts[job.job_id].filter(f => f.endsWith('.html')).length})
                               </div>
                               <select
                                 value={reportSortMode}
                                 onChange={(e) => setReportSortMode(e.target.value)}
-                                style={{
-                                  padding: '0.35rem 0.5rem',
-                                  fontSize: '0.85rem',
-                                  borderRadius: '6px',
-                                  border: '1px solid var(--line)',
-                                  background: '#fff',
-                                  fontFamily: 'inherit',
-                                  cursor: 'pointer',
-                                }}
+                                className="sort-select"
                               >
                                 <option value="date-desc">Latest first</option>
                                 <option value="date-asc">Oldest first</option>
