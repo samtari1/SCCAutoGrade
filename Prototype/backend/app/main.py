@@ -14,14 +14,16 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.responses import StreamingResponse
 from rq.command import send_stop_job_command
 from rq.exceptions import InvalidJobOperation
+from rq.job import Job, NoSuchJobError
 
 from .local_jobs import cancel_local_job, get_local_job, submit_local_job
-from .queueing import get_queue
+from .queueing import get_queue, get_redis
 from .schemas import CreateJobResponse, JobStatusResponse
-from .settings import JOBS_DIR, USE_INMEMORY_QUEUE, ensure_directories
+from .settings import DEFAULT_QUEUE_NAME, JOBS_DIR, PARALLEL_QUEUE_NAMES, QUEUE_BASE_NAME, USE_INMEMORY_QUEUE, ensure_directories
 from .tasks import run_grading_job
 from .grading import register_default_evaluators
 from .grading.legacy import AutoGrader
@@ -83,6 +85,38 @@ def _derive_assignment_name(job_dir: Path) -> Optional[str]:
             pass
 
     return None
+
+
+def _derive_assignment_name_from_html(instructions_html: str) -> Optional[str]:
+    match = re.search(r"<h1[^>]*>(.*?)</h1>", instructions_html, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    title = re.sub(r"<[^>]+>", "", match.group(1))
+    title = html.unescape(title).strip()
+    return title or None
+
+
+def _select_assignment_lane(assignment_name: Optional[str], instructions_html: str) -> str:
+    text = f"{assignment_name or ''}\n{instructions_html}".lower()
+    if re.search(r"\benum(s)?\b", text):
+        return "enum"
+    if re.search(r"\barray(s)?\b", text):
+        return "array"
+    if re.search(r"\bvariable(s)?\b", text):
+        return "variables"
+    return "general"
+
+
+def _queue_name_for_lane(lane: str) -> str:
+    candidate = f"{QUEUE_BASE_NAME}-{lane}"
+    return candidate if candidate in PARALLEL_QUEUE_NAMES else DEFAULT_QUEUE_NAME
+
+
+def _fetch_rq_job(job_id: str) -> Optional[Job]:
+    try:
+        return Job.fetch(job_id, connection=get_redis())
+    except NoSuchJobError:
+        return None
 
 
 app = FastAPI(title="AutoGrade API", version="0.1.0")
@@ -153,6 +187,8 @@ async def create_job(
         "main_zip_name": None,
         "instructions_html_name": None,
         "reused_from_job_id": None,
+        "assignment_name": None,
+        "queue_name": DEFAULT_QUEUE_NAME,
     }
     parsed_selected_students = _parse_selected_students(selected_students)
 
@@ -202,6 +238,7 @@ async def create_job(
     input_info_path.write_text(json.dumps(input_info), encoding="utf-8")
 
     instructions_text = instructions_path.read_text(encoding="utf-8", errors="ignore")
+    assignment_name = _derive_assignment_name_from_html(instructions_text)
     route_type, routing_reason = detect_route_type(instructions_text)
     code_specialty = "csharp"
     if route_type == "code":
@@ -217,10 +254,17 @@ async def create_job(
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    assignment_lane = _select_assignment_lane(assignment_name, instructions_text)
+    queue_name = _queue_name_for_lane(assignment_lane)
+    input_info["assignment_name"] = assignment_name
+    input_info["queue_name"] = queue_name
+    input_info_path.write_text(json.dumps(input_info), encoding="utf-8")
+
     stream_log = job_dir / "stream.log"
     stream_log.write_text(
         (
             f"[router] route_type={route_type}; evaluator={selected_evaluator}; reason={routing_reason}; "
+            f"assignment_lane={assignment_lane}; queue={queue_name}; "
             f"multi_agent={str(multi_agent_grading).lower()}; "
             f"disagreement_threshold={multi_agent_disagreement_threshold}; "
             f"part_disagreement_threshold={multi_agent_part_disagreement_threshold}; "
@@ -246,7 +290,7 @@ async def create_job(
             selected_students=parsed_selected_students,
         )
     else:
-        queue = get_queue()
+        queue = get_queue(queue_name)
         queue.enqueue(
             run_grading_job,
             job_id,
@@ -397,8 +441,7 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
             confidence=job_data.get("confidence"),
         )
 
-    queue = get_queue()
-    job = queue.fetch_job(job_id)
+    job = _fetch_rq_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -465,8 +508,7 @@ def cancel_job(job_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Job not found")
         return result
 
-    queue = get_queue()
-    job = queue.fetch_job(job_id)
+    job = _fetch_rq_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -491,7 +533,7 @@ def cancel_job(job_id: str) -> dict:
 
     if status == "started":
         try:
-            send_stop_job_command(queue.connection, job_id)
+            send_stop_job_command(get_redis(), job_id)
         except InvalidJobOperation as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -560,8 +602,13 @@ def resume_job(job_id: str) -> dict:
         try:
             stored = json.loads(input_info_path.read_text(encoding="utf-8"))
             selected_students = stored.get("selected_students")
+            stored_queue_name = str(stored.get("queue_name") or "").strip()
+            queue_name = stored_queue_name if stored_queue_name in PARALLEL_QUEUE_NAMES else DEFAULT_QUEUE_NAME
         except (OSError, json.JSONDecodeError):
             selected_students = None
+            queue_name = DEFAULT_QUEUE_NAME
+    else:
+        queue_name = DEFAULT_QUEUE_NAME
     
     # Check current job state and allow resume for stopped/failed jobs
     if USE_INMEMORY_QUEUE:
@@ -590,8 +637,8 @@ def resume_job(job_id: str) -> dict:
             selected_students=selected_students,
         )
     else:
-        queue = get_queue()
-        job = queue.fetch_job(job_id)
+        queue = get_queue(queue_name)
+        job = _fetch_rq_job(job_id)
         if job:
             status = str(job.get_status(refresh=True))
             if status not in {"finished", "failed", "stopped", "canceled"}:
@@ -699,7 +746,7 @@ def list_artifacts(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{filename}")
-def download_artifact(job_id: str, filename: str) -> FileResponse:
+def download_artifact(job_id: str, filename: str):
     # Prevent path traversal: strip any directory components from the filename.
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
@@ -718,6 +765,63 @@ def download_artifact(job_id: str, filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
     media_type, _ = mimetypes.guess_type(str(artifact_path))
+    if artifact_path.suffix.lower() == ".html":
+        html_text = artifact_path.read_text(encoding="utf-8", errors="ignore")
+        if "id=\"ag-scroll-top-btn\"" not in html_text:
+            scroll_top_snippet = """
+<style>
+#ag-scroll-top-btn {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.24);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9999;
+  transition: transform 0.15s ease, background 0.2s ease, opacity 0.2s ease;
+}
+#ag-scroll-top-btn.ag-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+#ag-scroll-top-btn:hover {
+  background: #1d4ed8;
+  transform: translateY(-2px);
+}
+@media (max-width: 900px) {
+  #ag-scroll-top-btn { right: 14px; bottom: 14px; width: 42px; height: 42px; font-size: 20px; }
+}
+</style>
+<button id="ag-scroll-top-btn" type="button" aria-label="Scroll to top" title="Scroll to top">↑</button>
+<script>
+(function () {
+  const button = document.getElementById('ag-scroll-top-btn');
+  if (!button) return;
+  const toggle = () => button.classList.toggle('ag-visible', window.scrollY > 240);
+  button.addEventListener('click', function () {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  window.addEventListener('scroll', toggle, { passive: true });
+  toggle();
+})();
+</script>
+"""
+            if "</body>" in html_text:
+                html_text = html_text.replace("</body>", f"{scroll_top_snippet}\n</body>")
+            else:
+                html_text += scroll_top_snippet
+        return HTMLResponse(content=html_text)
+
     return FileResponse(str(artifact_path), media_type=media_type or "application/octet-stream")
 
 
@@ -778,8 +882,7 @@ def list_jobs() -> dict:
                 status = "finished"
         else:
             try:
-                queue = get_queue()
-                rq_job = queue.fetch_job(job_id_str)
+                rq_job = _fetch_rq_job(job_id_str)
                 if rq_job is not None:
                     if rq_job.is_finished:
                         status = "finished"
@@ -821,6 +924,66 @@ def download_artifact(job_id: str, filename: str):
 
     guessed_media_type, _ = mimetypes.guess_type(str(resolved_file))
     media_type = guessed_media_type or "application/octet-stream"
+
+    if resolved_file.suffix.lower() == ".html":
+        html_text = resolved_file.read_text(encoding="utf-8", errors="ignore")
+        if "id=\"ag-scroll-top-btn\"" not in html_text:
+            scroll_top_snippet = """
+<style>
+#ag-scroll-top-btn {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    width: 46px;
+    height: 46px;
+    border: none;
+    border-radius: 999px;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.24);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 9999;
+    transition: transform 0.15s ease, background 0.2s ease, opacity 0.2s ease;
+}
+#ag-scroll-top-btn.ag-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+#ag-scroll-top-btn:hover {
+    background: #1d4ed8;
+    transform: translateY(-2px);
+}
+@media (max-width: 900px) {
+    #ag-scroll-top-btn { right: 14px; bottom: 14px; width: 42px; height: 42px; font-size: 20px; }
+}
+</style>
+<button id="ag-scroll-top-btn" type="button" aria-label="Scroll to top" title="Scroll to top">↑</button>
+<script>
+(function () {
+    const button = document.getElementById('ag-scroll-top-btn');
+    if (!button) return;
+    const toggle = () => button.classList.toggle('ag-visible', window.scrollY > 240);
+    button.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    window.addEventListener('scroll', toggle, { passive: true });
+    toggle();
+})();
+</script>
+"""
+        if "</body>" in html_text:
+            html_text = html_text.replace("</body>", f"{scroll_top_snippet}\n</body>")
+        else:
+            html_text += scroll_top_snippet
+    return HTMLResponse(
+        content=html_text,
+        headers={"Content-Disposition": f'inline; filename="{resolved_file.name}"'},
+    )
 
     return FileResponse(
         path=resolved_file,

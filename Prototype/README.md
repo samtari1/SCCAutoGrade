@@ -59,6 +59,15 @@ python -m backend.worker
 
 On macOS, the worker automatically uses `SimpleWorker` (non-forking mode) to avoid `Work-horse terminated unexpectedly; signal 6` crashes related to fork safety.
 
+`start.sh` now launches one worker per queue lane by default:
+
+- `<RQ_QUEUE_NAME>-general`
+- `<RQ_QUEUE_NAME>-enum`
+- `<RQ_QUEUE_NAME>-array`
+- `<RQ_QUEUE_NAME>-variables`
+
+This enables parallel grading across assignment lanes while each lane still runs one job at a time.
+
 ## 4) Start React Frontend
 
 Open another terminal:

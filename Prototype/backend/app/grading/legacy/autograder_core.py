@@ -2043,7 +2043,7 @@ PART SCORES:
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
     <title>{esc(assignment_name)} - {esc(student_name)} Grade Report</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 12px; color: #1f2937; background: #f8fafc; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 12px; color: #1f2937; background: #f8fafc; scroll-behavior: smooth; }}
         .container {{ width: 100%; max-width: none; margin: 0; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; box-sizing: border-box; }}
         h1, h2, h3, h4 {{ color: #111827; margin-top: 0; }}
         .meta {{ margin-bottom: 16px; line-height: 1.6; }}
@@ -2106,6 +2106,38 @@ PART SCORES:
         .inline-notes ul {{ margin: 0; padding-left: 18px; }}
         .part-score.low {{ color: #b91c1c; font-weight: 700; }}
         ul {{ margin-top: 8px; }}
+        .scroll-top-btn {{
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            width: 46px;
+            height: 46px;
+            border: none;
+            border-radius: 999px;
+            background: #2563eb;
+            color: #ffffff;
+            font-size: 22px;
+            font-weight: 700;
+            line-height: 1;
+            cursor: pointer;
+            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.24);
+            transition: transform 0.15s ease, background 0.2s ease, opacity 0.2s ease;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1000;
+        }}
+        .scroll-top-btn.visible {{
+            opacity: 1;
+            pointer-events: auto;
+        }}
+        .scroll-top-btn:hover {{
+            background: #1d4ed8;
+            transform: translateY(-2px);
+        }}
+        .scroll-top-btn:focus-visible {{
+            outline: 2px solid #93c5fd;
+            outline-offset: 2px;
+        }}
         @media (max-width: 900px) {{
             .split-controls {{ flex-direction: column; align-items: flex-start; }}
             .part-grid {{ grid-template-columns: 1fr; gap: 10px; }}
@@ -2116,6 +2148,7 @@ PART SCORES:
             .part-grid.is-collapsed .submission-panel {{ display: block; }}
             .code-row {{ grid-template-columns: 1fr; }}
             .line-note {{ margin-top: 4px; }}
+            .scroll-top-btn {{ right: 14px; bottom: 14px; width: 42px; height: 42px; font-size: 20px; }}
         }}
     </style>
 </head>
@@ -2141,8 +2174,25 @@ PART SCORES:
             <p>{overall_feedback}</p>
         </section>
     </div>
+    <button type="button" class="scroll-top-btn" aria-label="Scroll to top" title="Scroll to top">↑</button>
     <script>
         document.addEventListener('DOMContentLoaded', () => {{
+            const scrollTopButton = document.querySelector('.scroll-top-btn');
+            const toggleScrollTopButton = () => {{
+                if (!scrollTopButton) {{
+                    return;
+                }}
+                scrollTopButton.classList.toggle('visible', window.scrollY > 240);
+            }};
+
+            if (scrollTopButton) {{
+                scrollTopButton.addEventListener('click', () => {{
+                    window.scrollTo({{ top: 0, behavior: 'smooth' }});
+                }});
+                window.addEventListener('scroll', toggleScrollTopButton, {{ passive: true }});
+                toggleScrollTopButton();
+            }}
+
             const minLeftPercent = 20;
             const maxLeftPercent = 55;
 

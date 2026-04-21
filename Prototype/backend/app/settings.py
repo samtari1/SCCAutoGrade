@@ -8,7 +8,10 @@ DATA_DIR = BACKEND_DIR / "data"
 JOBS_DIR = DATA_DIR / "jobs"
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-QUEUE_NAME = os.getenv("RQ_QUEUE_NAME", "grading")
+QUEUE_BASE_NAME = os.getenv("RQ_QUEUE_NAME", "grading").strip() or "grading"
+ASSIGNMENT_QUEUE_LANES = ("general", "enum", "array", "variables")
+DEFAULT_QUEUE_NAME = f"{QUEUE_BASE_NAME}-general"
+PARALLEL_QUEUE_NAMES = tuple(f"{QUEUE_BASE_NAME}-{lane}" for lane in ASSIGNMENT_QUEUE_LANES)
 USE_INMEMORY_QUEUE = os.getenv("USE_INMEMORY_QUEUE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 

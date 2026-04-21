@@ -7,6 +7,13 @@ mkdir -p "$LOG_DIR"
 REDIS_MODE="unknown"
 INMEMORY_MODE="0"
 EXPLICIT_INMEMORY_MODE="${USE_INMEMORY_QUEUE:-0}"
+QUEUE_BASE_NAME="${RQ_QUEUE_NAME:-grading}"
+WORKER_QUEUES=(
+  "${QUEUE_BASE_NAME}-general"
+  "${QUEUE_BASE_NAME}-enum"
+  "${QUEUE_BASE_NAME}-array"
+  "${QUEUE_BASE_NAME}-variables"
+)
 PIDS=()
 
 stop_stale_processes() {
@@ -107,12 +114,15 @@ PIDS+=("$!")
 if [[ "$INMEMORY_MODE" == "1" ]]; then
   echo "[start] In-memory mode enabled: skipping RQ worker."
 else
-  echo "[start] Launching RQ worker..."
-  (
-    cd "$ROOT_DIR"
-    ./.venv/bin/python -m backend.worker
-  ) >"$LOG_DIR/worker.log" 2>&1 &
-  PIDS+=("$!")
+  echo "[start] Launching RQ workers for queues: ${WORKER_QUEUES[*]}"
+  for queue_name in "${WORKER_QUEUES[@]}"; do
+    queue_log_safe="${queue_name//[^a-zA-Z0-9_-]/_}"
+    (
+      cd "$ROOT_DIR"
+      RQ_WORKER_QUEUE="$queue_name" ./.venv/bin/python -m backend.worker
+    ) >"$LOG_DIR/worker-${queue_log_safe}.log" 2>&1 &
+    PIDS+=("$!")
+  done
 fi
 
 echo "[start] Launching frontend (http://localhost:5173)..."
@@ -125,7 +135,10 @@ PIDS+=("$!")
 echo "[start] Dev stack started. Logs:"
 echo "  - $LOG_DIR/backend.log"
 if [[ "$INMEMORY_MODE" != "1" ]]; then
-  echo "  - $LOG_DIR/worker.log"
+  for queue_name in "${WORKER_QUEUES[@]}"; do
+    queue_log_safe="${queue_name//[^a-zA-Z0-9_-]/_}"
+    echo "  - $LOG_DIR/worker-${queue_log_safe}.log"
+  done
 fi
 echo "  - $LOG_DIR/frontend.log"
 if [[ "$REDIS_MODE" == "local" ]]; then

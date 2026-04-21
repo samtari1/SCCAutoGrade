@@ -202,12 +202,38 @@ function App() {
       const data = await res.json();
       const jobs = data.jobs || [];
       setJobHistory(jobs);
+
+      // Keep the currently expanded row in sync while grading is ongoing.
+      if (expandedJobId) {
+        const expandedJob = jobs.find((job) => job.job_id === expandedJobId);
+        if (expandedJob) {
+          const expectedHtmlCount = Number(expandedJob.artifact_count || 0);
+          const cachedFiles = historyArtifacts[expandedJobId] || [];
+          const cachedHtmlCount = cachedFiles.filter((file) => file.endsWith(".html")).length;
+
+          if (expectedHtmlCount > cachedHtmlCount) {
+            try {
+              const artifactsRes = await fetch(`${API_BASE}/api/jobs/${expandedJobId}/artifacts`);
+              if (artifactsRes.ok) {
+                const artifactsData = await artifactsRes.json();
+                setHistoryArtifacts((prev) => ({
+                  ...prev,
+                  [expandedJobId]: artifactsData.files || []
+                }));
+              }
+            } catch {
+              // Non-blocking: keep existing cached history artifacts.
+            }
+          }
+        }
+      }
+
       return jobs;
     } catch {
       // history panel is non-critical
       return [];
     }
-  }, []);
+  }, [expandedJobId, historyArtifacts]);
 
   const syncCurrentJobFromHistory = useCallback(async (targetJobId) => {
     const currentId = targetJobId || jobId;
