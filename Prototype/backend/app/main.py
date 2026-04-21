@@ -11,7 +11,10 @@ import tempfile
 import uuid
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+import os
+import re as _re
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
@@ -820,9 +823,345 @@ def download_artifact(job_id: str, filename: str):
                 html_text = html_text.replace("</body>", f"{scroll_top_snippet}\n</body>")
             else:
                 html_text += scroll_top_snippet
+
+        # Inject chatbot widget (idempotent)
+        if 'id="ag-chatbot-toggle"' not in html_text:
+            chatbot_snippet = f"""
+<style>
+#ag-chatbot-fab {{
+  position: fixed;
+  right: 20px;
+  bottom: 76px;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 12px 24px rgba(15,23,42,0.24);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, transform 0.15s ease;
+}}
+#ag-chatbot-fab:hover {{ background: #15803d; transform: translateY(-2px); }}
+#ag-chatbot-panel {{
+  position: fixed;
+  right: 20px;
+  bottom: 132px;
+  width: 370px;
+  max-width: calc(100vw - 32px);
+  height: 480px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  box-shadow: 0 20px 48px rgba(15,23,42,0.18);
+  display: flex;
+  flex-direction: column;
+  z-index: 9997;
+  overflow: hidden;
+  transition: opacity 0.2s, transform 0.2s;
+}}
+#ag-chatbot-panel.ag-hidden {{ opacity: 0; pointer-events: none; transform: translateY(12px); }}
+#ag-chat-header {{
+  background: #16a34a;
+  color: #fff;
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}}
+#ag-chat-header span {{ flex: 1; }}
+#ag-chat-close {{
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}}
+#ag-chat-messages {{
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}}
+.ag-msg {{ padding: 8px 12px; border-radius: 12px; max-width: 88%; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }}
+.ag-msg-user {{ background: #16a34a; color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }}
+.ag-msg-assistant {{ background: #f1f5f9; color: #0f172a; align-self: flex-start; border-bottom-left-radius: 4px; }}
+.ag-msg-typing {{ color: #64748b; font-style: italic; }}
+#ag-chat-footer {{
+  padding: 10px 12px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}}
+#ag-chat-input {{
+  flex: 1;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  resize: none;
+  height: 38px;
+  outline: none;
+  font-family: inherit;
+}}
+#ag-chat-input:focus {{ border-color: #16a34a; box-shadow: 0 0 0 2px #bbf7d0; }}
+#ag-chat-send {{
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.2s;
+}}
+#ag-chat-send:disabled {{ background: #94a3b8; cursor: not-allowed; }}
+#ag-chat-send:not(:disabled):hover {{ background: #15803d; }}
+@media (max-width: 900px) {{
+  #ag-chatbot-fab {{ right: 14px; bottom: 68px; width: 42px; height: 42px; font-size: 18px; }}
+  #ag-chatbot-panel {{ right: 8px; bottom: 120px; width: calc(100vw - 16px); height: 420px; }}
+}}
+</style>
+<button id="ag-chatbot-toggle" id2="ag-chatbot-fab" type="button" aria-label="Open grading assistant" title="Ask the grading assistant">💬</button>
+<div id="ag-chatbot-panel" class="ag-hidden" role="dialog" aria-label="Grading assistant chat">
+  <div id="ag-chat-header">
+    <span>🎓 Grading Assistant</span>
+    <button id="ag-chat-close" aria-label="Close chat" title="Close">✕</button>
+  </div>
+  <div id="ag-chat-messages" aria-live="polite"></div>
+  <div id="ag-chat-footer">
+    <textarea id="ag-chat-input" placeholder="Ask about this report…" rows="1" aria-label="Your question"></textarea>
+    <button id="ag-chat-send" title="Send">➤</button>
+  </div>
+</div>
+<script>
+(function () {{
+  const toggle = document.getElementById('ag-chatbot-toggle');
+  const panel  = document.getElementById('ag-chatbot-panel');
+  const closeBtn = document.getElementById('ag-chat-close');
+  const messages = document.getElementById('ag-chat-messages');
+  const input = document.getElementById('ag-chat-input');
+  const sendBtn = document.getElementById('ag-chat-send');
+
+  // Fix: reuse the button for the FAB role (id attr can only appear once; use the button directly)
+  toggle.style.cssText = toggle.style.cssText;  // noop flush
+  // Copy FAB styles to the toggle button since CSS targets #ag-chatbot-fab
+  toggle.id = 'ag-chatbot-fab';
+
+  let history = [];
+  let busy = false;
+
+  const CHAT_URL = window.location.origin + '/api/jobs/{job_id}/artifacts/' + encodeURIComponent('{safe_name}') + '/chat';
+
+  function addMsg(role, text) {{
+    const div = document.createElement('div');
+    div.className = 'ag-msg ' + (role === 'user' ? 'ag-msg-user' : 'ag-msg-assistant');
+    div.textContent = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }}
+
+  toggle.addEventListener('click', function () {{
+    panel.classList.toggle('ag-hidden');
+    if (!panel.classList.contains('ag-hidden')) {{
+      input.focus();
+      if (history.length === 0) {{
+        addMsg('assistant', 'Hi! I can answer questions about this grade report — the scores, feedback, or assignment requirements. What would you like to know?');
+      }}
+    }}
+  }});
+
+  closeBtn.addEventListener('click', function () {{
+    panel.classList.add('ag-hidden');
+  }});
+
+  async function sendMessage() {{
+    const text = input.value.trim();
+    if (!text || busy) return;
+    busy = true;
+    sendBtn.disabled = true;
+    input.value = '';
+
+    addMsg('user', text);
+    history.push({{ role: 'user', content: text }});
+
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'ag-msg ag-msg-assistant ag-msg-typing';
+    typingDiv.textContent = 'Thinking…';
+    messages.appendChild(typingDiv);
+    messages.scrollTop = messages.scrollHeight;
+
+    try {{
+      const resp = await fetch(CHAT_URL, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ messages: history }}),
+      }});
+
+      if (!resp.ok) {{
+        typingDiv.className = 'ag-msg ag-msg-assistant';
+        typingDiv.textContent = 'Error: ' + resp.status + ' ' + resp.statusText;
+        busy = false;
+        sendBtn.disabled = false;
+        return;
+      }}
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let reply = '';
+      typingDiv.className = 'ag-msg ag-msg-assistant';
+      typingDiv.textContent = '';
+
+      while (true) {{
+        const {{ done, value }} = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, {{ stream: true }});
+        reply += chunk;
+        typingDiv.textContent = reply;
+        messages.scrollTop = messages.scrollHeight;
+      }}
+
+      history.push({{ role: 'assistant', content: reply }});
+    }} catch (err) {{
+      typingDiv.className = 'ag-msg ag-msg-assistant';
+      typingDiv.textContent = 'Network error: ' + err.message;
+    }}
+
+    busy = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }}
+
+  sendBtn.addEventListener('click', sendMessage);
+  input.addEventListener('keydown', function (e) {{
+    if (e.key === 'Enter' && !e.shiftKey) {{
+      e.preventDefault();
+      sendMessage();
+    }}
+  }});
+}})();
+</script>
+"""
+            if "</body>" in html_text:
+                html_text = html_text.replace("</body>", f"{chatbot_snippet}\n</body>")
+            else:
+                html_text += chatbot_snippet
+
         return HTMLResponse(content=html_text)
 
     return FileResponse(str(artifact_path), media_type=media_type or "application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
+# Report Chatbot endpoint
+# ---------------------------------------------------------------------------
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and decode entities for use as plain-text LLM context."""
+    import html as _html_mod
+    no_tags = _re.sub(r"<[^>]+>", " ", text)
+    return _html_mod.unescape(_re.sub(r" {2,}", " ", no_tags)).strip()
+
+
+@app.post("/api/jobs/{job_id}/artifacts/{filename}/chat")
+async def artifact_chat(
+    job_id: str,
+    filename: str,
+    payload: dict = Body(...),
+):
+    """Stream a chat reply using the report HTML as context."""
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    output_dir = JOBS_DIR / job_id / "output"
+    artifact_path = (output_dir / safe_name).resolve()
+    try:
+        artifact_path.relative_to(output_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not artifact_path.exists() or not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    html_text = artifact_path.read_text(encoding="utf-8", errors="ignore")
+    report_text = _strip_html(html_text)
+    # Limit context to avoid excessive token usage (~120 k chars ≈ ~30 k tokens)
+    if len(report_text) > 120_000:
+        report_text = report_text[:120_000] + "\n[...report truncated for context length...]"
+
+    messages: list = payload.get("messages", [])
+    if not messages or not isinstance(messages, list):
+        raise HTTPException(status_code=400, detail="messages array is required")
+
+    # Validate message structure (only allow role/content string pairs)
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") not in {"user", "assistant"} or not isinstance(msg.get("content"), str):
+            raise HTTPException(status_code=400, detail="Invalid message format")
+
+    system_prompt = (
+        "You are a helpful grading assistant. "
+        "The professor or teaching assistant has opened a student grade report and may have questions "
+        "about the grading, the feedback, or the assignment requirements. "
+        "Answer clearly and concisely based on the report content provided. "
+        "If a question cannot be answered from the report, say so honestly.\n\n"
+        f"=== GRADE REPORT ===\n{report_text}\n=== END OF REPORT ==="
+    )
+
+    model_provider = os.getenv("MODEL_PROVIDER", "openai").strip().lower()
+    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini").strip()
+    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    custom_endpoint = os.getenv("CUSTOM_ENDPOINT", "http://localhost:11434").rstrip("/")
+
+    from openai import AsyncOpenAI, AsyncStream
+    from openai.types.chat import ChatCompletionChunk
+
+    if model_provider in {"custom", "ollama", "local"}:
+        client = AsyncOpenAI(
+            api_key="ollama",
+            base_url=f"{custom_endpoint}/v1",
+        )
+    else:
+        if not openai_api_key:
+            raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+        client = AsyncOpenAI(api_key=openai_api_key)
+
+    openai_messages = [{"role": "system", "content": system_prompt}] + [
+        {"role": m["role"], "content": m["content"]} for m in messages
+    ]
+
+    async def generate():
+        try:
+            stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
+                model=model_name,
+                messages=openai_messages,
+                stream=True,
+                max_completion_tokens=1024,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+        except Exception as exc:  # noqa: BLE001
+            yield f"\n\n[Error contacting LLM: {exc}]"
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/jobs")
