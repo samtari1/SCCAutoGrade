@@ -401,6 +401,123 @@ class AutoGrader:
                     except Exception as e:
                         print(f"  ⚠️  Failed to extract {archive_file.name}: {e}")
 
+    def _visible_entries(self, folder: Path) -> List[Path]:
+        # Exclude system folders like __MACOSX and dotfiles
+        return [
+            entry for entry in sorted(folder.iterdir())
+            if not entry.name.startswith('.')
+            and entry.name != '__MACOSX'
+        ]
+
+    def _is_submission_container_entry(self, entry: Path) -> bool:
+        return entry.is_dir() or entry.suffix.lower() in {'.zip', '.7z'}
+
+    def _is_grouping_directory(self, entry: Path) -> bool:
+        """Return True when a directory appears to be a container of many submissions.
+
+        Examples: assignment-level folders that contain many student folders/archives and
+        no direct submission files at that level.
+        """
+        if not entry.is_dir():
+            return False
+
+        children = self._visible_entries(entry)
+        if not children:
+            return False
+
+        has_non_archive_files = any(
+            child.is_file() and child.suffix.lower() not in {'.zip', '.7z'}
+            for child in children
+        )
+        if has_non_archive_files:
+            return False
+
+        child_submission_entries = [
+            child for child in children if self._is_submission_container_entry(child)
+        ]
+        if len(child_submission_entries) >= 2:
+            return True
+
+        if len(child_submission_entries) == 1:
+            parent_looks_assignment = bool(
+                re.search(r"assignment|lab|module|week|project|homework|submission", entry.name, re.IGNORECASE)
+            )
+            child_name = child_submission_entries[0].name
+            child_looks_student = bool(
+                re.search(r"assignsubmission|student|\d{5,}", child_name, re.IGNORECASE)
+            )
+            if parent_looks_assignment and child_looks_student:
+                return True
+
+        return False
+
+    def _expand_grouping_directories(self, entries: List[Path]) -> List[Path]:
+        # Recursively flatten all grouping/assignment folders until only student-level entries remain
+        result = []
+        for entry in entries:
+            if self._is_grouping_directory(entry):
+                children = [child for child in self._visible_entries(entry) if self._is_submission_container_entry(child)]
+                # Recurse into children
+                result.extend(self._expand_grouping_directories(children))
+            else:
+                result.append(entry)
+        return result
+
+    def _student_entries_from_root(self, extract_dir: Path) -> List[Path]:
+        """Return top-level entries that should be treated as individual student submissions.
+
+        Some LMS exports include a wrapper folder inside the main submissions zip. In that case,
+        we unwrap one or more pure-container levels before enumerating student entries.
+        """
+        current_dir = extract_dir
+
+        while True:
+            entries = self._visible_entries(current_dir)
+            submission_entries = [entry for entry in entries if self._is_submission_container_entry(entry)]
+
+            # No folder/archive candidates at this level.
+            if not submission_entries:
+                return []
+
+            # Standard case: multiple entries under current directory. Some may be
+            # assignment/grouping folders, so flatten them first.
+            if len(submission_entries) >= 2:
+                candidate_entries = submission_entries
+
+                while True:
+                    expanded = self._expand_grouping_directories(candidate_entries)
+                    if [str(path) for path in expanded] == [str(path) for path in candidate_entries]:
+                        break
+                    candidate_entries = expanded
+
+                return candidate_entries
+
+            # Exactly one folder/archive candidate.
+            only_entry = submission_entries[0]
+
+            # A top-level archive should be treated as the single student submission.
+            if not only_entry.is_dir():
+                return submission_entries
+
+            # Descend only when this is a pure wrapper layer (single child and no files).
+            if len(entries) == 1:
+                child_entries = self._visible_entries(only_entry)
+                child_submission_entries = [entry for entry in child_entries if self._is_submission_container_entry(entry)]
+                if child_submission_entries:
+                    current_dir = only_entry
+                    continue
+
+            candidate_entries = submission_entries
+
+            # Flatten grouping folders (e.g., assignment folders containing many students).
+            while True:
+                expanded = self._expand_grouping_directories(candidate_entries)
+                if [str(path) for path in expanded] == [str(path) for path in candidate_entries]:
+                    break
+                candidate_entries = expanded
+
+            return candidate_entries
+
     def extract_all_assignments(self, main_zip_path: str) -> Dict[str, str]:
         """Extract all student assignments from the main zip file and nested zips"""
         assignments = {}
@@ -418,10 +535,12 @@ class AutoGrader:
                 main_zip.extractall(str(extract_dir))
             print(f"✅ Extracted to: {extract_dir}")
 
-        # ── Step 2: Iterate direct children — each represents one student submission ──
-        for student_entry in sorted(extract_dir.iterdir()):
-            if student_entry.name.startswith('.'):
-                continue
+        # ── Step 2: Iterate student-level entries (handles optional wrapper folder) ──
+        student_entries = self._student_entries_from_root(extract_dir)
+        if not student_entries:
+            print("⚠️  No student submission entries found in extracted archive")
+
+        for student_entry in student_entries:
 
             student_name = self.extract_student_name(student_entry.name)
             normalized_name = self.normalize_student_name(student_name)
@@ -495,18 +614,15 @@ class AutoGrader:
             with zipfile.ZipFile(main_zip_path, 'r') as main_zip:
                 main_zip.extractall(str(extract_dir))
 
-        for student_entry in sorted(extract_dir.iterdir()):
-            if student_entry.name.startswith('.'):
-                continue
+        for student_entry in self._student_entries_from_root(extract_dir):
 
             student_name = self.extract_student_name(student_entry.name)
             normalized_name = self.normalize_student_name(student_name)
             if not student_name or normalized_name in processed_students:
                 continue
 
-            if student_entry.is_dir() or student_entry.suffix.lower() in {'.zip', '.7z'}:
-                students.append(student_name)
-                processed_students.add(normalized_name)
+            students.append(student_name)
+            processed_students.add(normalized_name)
 
         return students
     

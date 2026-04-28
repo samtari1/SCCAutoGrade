@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import os
 import re as _re
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
@@ -26,12 +26,50 @@ from rq.job import Job, NoSuchJobError
 from .local_jobs import cancel_local_job, get_local_job, submit_local_job
 from .queueing import get_queue, get_redis
 from .schemas import CreateJobResponse, JobStatusResponse
-from .settings import DEFAULT_QUEUE_NAME, JOBS_DIR, PARALLEL_QUEUE_NAMES, QUEUE_BASE_NAME, USE_INMEMORY_QUEUE, ensure_directories
+from .settings import DATA_DIR, DEFAULT_QUEUE_NAME, JOBS_DIR, PARALLEL_QUEUE_NAMES, QUEUE_BASE_NAME, USE_INMEMORY_QUEUE, ensure_directories
 from .tasks import run_grading_job
 from .grading import register_default_evaluators
 from .grading.legacy import AutoGrader
 from .grading.registry import get_evaluator, list_evaluators
 from .grading.routing import detect_code_specialty, detect_route_type, map_route_to_evaluator
+from .auth import authenticate_user, create_session, create_user, delete_session, get_user_by_token, init_auth_db
+
+
+AUTH_DB_PATH = DATA_DIR / "auth.db"
+
+_ALLOWED_INSTRUCTION_EXTENSIONS = {".html", ".htm", ".txt", ".pdf", ".docx", ".doc"}
+
+
+def _convert_instructions_to_html(file_bytes: bytes, filename: str) -> str:
+    """Convert an uploaded instruction file to an HTML string for storage."""
+    ext = Path(filename).suffix.lower()
+    if ext in (".html", ".htm"):
+        return file_bytes.decode("utf-8", errors="ignore")
+    if ext == ".txt":
+        content = file_bytes.decode("utf-8", errors="ignore")
+        escaped = html.escape(content)
+        return f"<html><body><pre>{escaped}</pre></body></html>"
+    if ext == ".pdf":
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(file_bytes))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            escaped = html.escape(text)
+            return f"<html><body><pre>{escaped}</pre></body></html>"
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to parse PDF: {exc}") from exc
+    if ext in (".docx", ".doc"):
+        try:
+            import io
+            from docx import Document
+            doc = Document(io.BytesIO(file_bytes))
+            text = "\n".join(p.text for p in doc.paragraphs)
+            escaped = html.escape(text)
+            return f"<html><body><pre>{escaped}</pre></body></html>"
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to parse Word document: {exc}") from exc
+    raise HTTPException(status_code=400, detail=f"Unsupported instructions file type: {ext}")
 
 
 def _parse_selected_students(raw_value: str) -> Optional[List[str]]:
@@ -122,6 +160,46 @@ def _fetch_rq_job(job_id: str) -> Optional[Job]:
         return None
 
 
+def _extract_bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("authorization", "").strip()
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = str(request.query_params.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    return token
+
+
+def _require_user(request: Request) -> dict:
+    token = _extract_bearer_token(request)
+    user = get_user_by_token(AUTH_DB_PATH, token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
+
+
+def _job_owner_user_id(job_id: str) -> Optional[str]:
+    info_path = JOBS_DIR / job_id / "input" / "input_info.json"
+    if not info_path.exists():
+        return None
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    owner = info.get("owner_user_id")
+    if isinstance(owner, str) and owner.strip():
+        return owner.strip()
+    return None
+
+
+def _assert_job_access(job_id: str, user: dict) -> None:
+    owner_user_id = _job_owner_user_id(job_id)
+    if not owner_user_id or owner_user_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job")
+
+
 app = FastAPI(title="AutoGrade API", version="0.1.0")
 
 app.add_middleware(
@@ -136,11 +214,61 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     ensure_directories()
+    init_auth_db(AUTH_DB_PATH)
     register_default_evaluators()
 
 
 @app.get("/api/health")
 def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/api/auth/register")
+def register(payload: dict = Body(...)) -> dict:
+    email = str(payload.get("email") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    try:
+        user = create_user(AUTH_DB_PATH, email=email, password=password)
+    except Exception as exc:
+        # sqlite unique constraint violation on duplicate email
+        if "UNIQUE" in str(exc).upper():
+            raise HTTPException(status_code=409, detail="Email already registered") from exc
+        raise
+
+    token = create_session(AUTH_DB_PATH, user["id"])
+    return {"token": token, "user": user}
+
+
+@app.post("/api/auth/login")
+def login(payload: dict = Body(...)) -> dict:
+    email = str(payload.get("email") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+
+    user = authenticate_user(AUTH_DB_PATH, email=email, password=password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_session(AUTH_DB_PATH, user["id"])
+    return {"token": token, "user": user}
+
+
+@app.get("/api/auth/me")
+def me(request: Request) -> dict:
+    user = _require_user(request)
+    return {"user": user}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request) -> dict:
+    token = _extract_bearer_token(request)
+    delete_session(AUTH_DB_PATH, token)
     return {"ok": True}
 
 
@@ -160,6 +288,7 @@ def get_evaluators() -> dict:
 
 @app.post("/api/jobs", response_model=CreateJobResponse)
 async def create_job(
+    request: Request,
     main_zip: Optional[UploadFile] = File(None),
     instructions_html: Optional[UploadFile] = File(None),
     reuse_job_id: str = Form(""),
@@ -170,6 +299,7 @@ async def create_job(
     multi_agent_part_disagreement_threshold: float = Form(10.0),
     grading_context: str = Form(""),
 ) -> CreateJobResponse:
+    user = _require_user(request)
     if multi_agent_disagreement_threshold < 0:
         raise HTTPException(status_code=400, detail="multi_agent_disagreement_threshold must be >= 0")
     if multi_agent_part_disagreement_threshold < 0:
@@ -192,11 +322,14 @@ async def create_job(
         "reused_from_job_id": None,
         "assignment_name": None,
         "queue_name": DEFAULT_QUEUE_NAME,
+        "owner_user_id": user["id"],
+        "owner_email": user["email"],
     }
     parsed_selected_students = _parse_selected_students(selected_students)
 
     reuse_job_id = (reuse_job_id or "").strip()
     if reuse_job_id:
+        _assert_job_access(reuse_job_id, user)
         source_input_dir = JOBS_DIR / reuse_job_id / "input"
         source_zip = source_input_dir / "submissions.zip"
         source_instructions = source_input_dir / "instructions.html"
@@ -222,13 +355,21 @@ async def create_job(
     else:
         if not main_zip or not main_zip.filename or not main_zip.filename.lower().endswith(".zip"):
             raise HTTPException(status_code=400, detail="main_zip must be a .zip file")
-        if not instructions_html or not instructions_html.filename or not instructions_html.filename.lower().endswith(".html"):
-            raise HTTPException(status_code=400, detail="instructions_html must be a .html file")
+        if not instructions_html or not instructions_html.filename:
+            raise HTTPException(status_code=400, detail="instructions_html is required")
+        instr_ext = Path(instructions_html.filename).suffix.lower()
+        if instr_ext not in _ALLOWED_INSTRUCTION_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported instructions file type '{instr_ext}'. Allowed: {', '.join(sorted(_ALLOWED_INSTRUCTION_EXTENSIONS))}"
+            )
 
         with zip_path.open("wb") as f:
             shutil.copyfileobj(main_zip.file, f)
-        with instructions_path.open("wb") as f:
-            shutil.copyfileobj(instructions_html.file, f)
+
+        instr_bytes = await instructions_html.read()
+        instr_html_content = _convert_instructions_to_html(instr_bytes, instructions_html.filename)
+        instructions_path.write_text(instr_html_content, encoding="utf-8")
 
         input_info["main_zip_name"] = main_zip.filename
         input_info["instructions_html_name"] = instructions_html.filename
@@ -324,7 +465,9 @@ async def create_job(
 
 
 @app.get("/api/jobs/{job_id}/input-info")
-def get_job_input_info(job_id: str) -> dict:
+def get_job_input_info(job_id: str, request: Request) -> dict:
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     input_dir = JOBS_DIR / job_id / "input"
     zip_path = input_dir / "submissions.zip"
     instructions_path = input_dir / "instructions.html"
@@ -356,13 +499,16 @@ def get_job_input_info(job_id: str) -> dict:
 
 @app.post("/api/submissions/preview")
 async def preview_submissions(
+    request: Request,
     main_zip: Optional[UploadFile] = File(None),
     reuse_job_id: str = Form(""),
 ) -> dict:
+    user = _require_user(request)
     reuse_job_id = (reuse_job_id or "").strip()
     selected_students = None
 
     if reuse_job_id:
+        _assert_job_access(reuse_job_id, user)
         source_input_dir = JOBS_DIR / reuse_job_id / "input"
         zip_path = source_input_dir / "submissions.zip"
         if not zip_path.exists():
@@ -377,8 +523,7 @@ async def preview_submissions(
                 selected_students = None
 
         grader = AutoGrader()
-        assignments = grader.extract_all_assignments(str(zip_path))
-        submissions = sorted(assignments.keys())
+        submissions = sorted(grader.list_submission_students(str(zip_path)))
         return {
             "submissions": submissions,
             "selected_students": [s for s in (selected_students or submissions) if s in submissions],
@@ -393,8 +538,7 @@ async def preview_submissions(
             shutil.copyfileobj(main_zip.file, f)
 
         grader = AutoGrader()
-        assignments = grader.extract_all_assignments(str(temp_zip))
-        submissions = sorted(assignments.keys())
+        submissions = sorted(grader.list_submission_students(str(temp_zip)))
         return {
             "submissions": submissions,
             "selected_students": submissions,
@@ -498,13 +642,17 @@ def _build_job_status(job_id: str) -> JobStatusResponse:
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobStatusResponse)
-def get_job_status(job_id: str) -> JobStatusResponse:
+def get_job_status(job_id: str, request: Request) -> JobStatusResponse:
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     return _build_job_status(job_id)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
-def cancel_job(job_id: str) -> dict:
+def cancel_job(job_id: str, request: Request) -> dict:
     """Cancel a queued job or request stop for a running job."""
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     if USE_INMEMORY_QUEUE:
         result = cancel_local_job(job_id)
         if not result:
@@ -557,8 +705,10 @@ def cancel_job(job_id: str) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/resume")
-def resume_job(job_id: str) -> dict:
+def resume_job(job_id: str, request: Request) -> dict:
     """Resume a stopped or failed grading job, skipping already-completed students."""
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     job_dir = JOBS_DIR / job_id
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Job not found")
@@ -678,7 +828,9 @@ def resume_job(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/stream")
-async def stream_job(job_id: str):
+async def stream_job(job_id: str, request: Request):
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     stream_path = JOBS_DIR / job_id / "stream.log"
 
     async def event_generator():
@@ -734,8 +886,9 @@ async def stream_job(job_id: str):
 
 
 @app.delete("/api/jobs/{job_id}")
-def delete_job(job_id: str) -> dict:
+def delete_job(job_id: str, request: Request) -> dict:
     """Permanently delete a job directory from disk."""
+    user = _require_user(request)
     # Validate job_id is a UUID to prevent path traversal.
     try:
         uuid.UUID(job_id)
@@ -751,13 +904,16 @@ def delete_job(job_id: str) -> dict:
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Job not found")
 
+    _assert_job_access(job_id, user)
+
     shutil.rmtree(job_dir)
     return {"deleted": job_id}
 
 
 @app.delete("/api/jobs")
-def delete_jobs_bulk(body: dict = Body(...)) -> dict:
+def delete_jobs_bulk(request: Request, body: dict = Body(...)) -> dict:
     """Permanently delete multiple job directories from disk."""
+    user = _require_user(request)
     job_ids = body.get("job_ids", [])
     if not isinstance(job_ids, list) or not job_ids:
         raise HTTPException(status_code=400, detail="job_ids must be a non-empty list")
@@ -783,6 +939,11 @@ def delete_jobs_bulk(body: dict = Body(...)) -> dict:
             errors.append({"job_id": job_id, "error": "Not found"})
             continue
 
+        owner_user_id = _job_owner_user_id(str(job_id))
+        if not owner_user_id or owner_user_id != user["id"]:
+            errors.append({"job_id": job_id, "error": "Forbidden"})
+            continue
+
         shutil.rmtree(job_dir)
         deleted.append(job_id)
 
@@ -790,7 +951,9 @@ def delete_jobs_bulk(body: dict = Body(...)) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/artifacts")
-def list_artifacts(job_id: str) -> dict:
+def list_artifacts(job_id: str, request: Request) -> dict:
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     output_dir = JOBS_DIR / job_id / "output"
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail="Job output not found")
@@ -805,7 +968,9 @@ def list_artifacts(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{filename}")
-def download_artifact(job_id: str, filename: str):
+def download_artifact(job_id: str, filename: str, request: Request):
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     # Prevent path traversal: strip any directory components from the filename.
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
@@ -1022,7 +1187,9 @@ def download_artifact(job_id: str, filename: str):
   let history = [];
   let busy = false;
 
-  const CHAT_URL = window.location.origin + '/api/jobs/{job_id}/artifacts/' + encodeURIComponent('{safe_name}') + '/chat';
+    const token = new URLSearchParams(window.location.search).get('token');
+    const tokenSuffix = token ? ('?token=' + encodeURIComponent(token)) : '';
+    const CHAT_URL = window.location.origin + '/api/jobs/{job_id}/artifacts/' + encodeURIComponent('{safe_name}') + '/chat' + tokenSuffix;
 
   function addMsg(role, text) {{
     const div = document.createElement('div');
@@ -1137,11 +1304,14 @@ def _strip_html(text: str) -> str:
 
 @app.post("/api/jobs/{job_id}/artifacts/{filename}/chat")
 async def artifact_chat(
+    request: Request,
     job_id: str,
     filename: str,
     payload: dict = Body(...),
 ):
     """Stream a chat reply using the report HTML as context."""
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -1221,8 +1391,9 @@ async def artifact_chat(
 
 
 @app.get("/api/jobs")
-def list_jobs() -> dict:
+def list_jobs(request: Request) -> dict:
     """Return a summary list of all jobs found on disk, newest first."""
+    user = _require_user(request)
     if not JOBS_DIR.exists():
         return {"jobs": []}
 
@@ -1236,6 +1407,10 @@ def list_jobs() -> dict:
             uuid.UUID(job_id_str)
         except ValueError:
             continue  # Skip non-UUID directories.
+
+        owner_user_id = _job_owner_user_id(job_id_str)
+        if not owner_user_id or owner_user_id != user["id"]:
+            continue
 
         created_at = job_dir.stat().st_mtime
 
@@ -1306,7 +1481,9 @@ def list_jobs() -> dict:
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{filename}")
-def download_artifact(job_id: str, filename: str):
+def download_artifact(job_id: str, filename: str, request: Request):
+    user = _require_user(request)
+    _assert_job_access(job_id, user)
     output_dir = JOBS_DIR / job_id / "output"
     file_path = output_dir / filename
     resolved_output = output_dir.resolve()

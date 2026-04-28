@@ -63,6 +63,15 @@ body {
   max-width: 72ch;
 }
 
+.auth-hero {
+  text-align: center;
+}
+
+.auth-hero p {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -76,6 +85,38 @@ body {
 
 .nav-card {
   padding: 0.72rem;
+}
+
+.auth-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.auth-user {
+  font-size: 0.9rem;
+  color: #4f2a77;
+}
+
+.auth-card {
+  max-width: 560px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+
+.auth-form {
+  gap: 0.75rem;
 }
 
 .top-nav {
@@ -127,6 +168,150 @@ label {
   font-size: 0.82rem;
   font-weight: 500;
   color: #6b6355;
+}
+
+.or-divider {
+  text-align: center;
+  font-size: 0.85rem;
+  color: #999;
+  margin: 0.25rem 0;
+  user-select: none;
+}
+
+/* ── Upload steps ─────────────────────────────────── */
+.upload-steps {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: start;
+  gap: 1rem;
+}
+
+.upload-step {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.upload-step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.upload-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.upload-step-number-done {
+  background: #2d9e6e;
+  font-size: 1rem;
+}
+
+.upload-step-title {
+  font-weight: 700;
+  font-size: 0.97rem;
+}
+
+.upload-step-desc {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #888;
+  font-weight: 400;
+}
+
+.upload-step-arrow {
+  font-size: 1.4rem;
+  color: var(--line-strong);
+  padding-top: 2.4rem;
+  text-align: center;
+  user-select: none;
+}
+
+/* ── Drop zone ────────────────────────────────────── */
+.drop-zone {
+  display: grid;
+  place-items: center;
+  gap: 0.3rem;
+  padding: 1.3rem 0.9rem;
+  border: 2px dashed var(--line-strong);
+  border-radius: 12px;
+  background: #f8f4fc;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  text-align: center;
+  min-height: 115px;
+  outline: none;
+}
+
+.drop-zone:hover,
+.drop-zone:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px rgba(91, 47, 163, 0.12);
+}
+
+.drop-zone-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 4px rgba(91, 47, 163, 0.18);
+}
+
+.drop-zone-filled {
+  border-color: #2d9e6e;
+  border-style: solid;
+  background: var(--success-soft);
+}
+
+.drop-zone-filled:hover,
+.drop-zone-filled:focus-visible {
+  border-color: #22845c;
+  background: #cceddf;
+  box-shadow: 0 0 0 3px rgba(45, 158, 110, 0.15);
+}
+
+.drop-zone-icon {
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.drop-zone-cta {
+  font-size: 0.87rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.drop-zone-hint {
+  font-size: 0.76rem;
+  color: #999;
+}
+
+.drop-zone-filename {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #2d9e6e;
+  word-break: break-all;
+  padding: 0 0.5rem;
+}
+
+@media (max-width: 600px) {
+  .upload-steps {
+    grid-template-columns: 1fr;
+  }
+  .upload-step-arrow {
+    transform: rotate(90deg);
+    padding-top: 0;
+    justify-self: center;
+  }
 }
 
 .reuse-banner {
@@ -207,6 +392,16 @@ input[type="number"] {
   background: #fff;
 }
 
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  font: inherit;
+  padding: 0.52rem 0.62rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
 select {
   font: inherit;
   padding: 0.52rem 0.62rem;
@@ -216,6 +411,9 @@ select {
 }
 
 input[type="number"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="text"]:focus,
 select:focus,
 textarea:focus,
 input[type="file"]:focus-visible,
@@ -232,6 +430,12 @@ textarea {
   padding: 0.62rem 0.7rem;
   resize: vertical;
   min-height: 120px;
+}
+
+textarea.textarea-filled {
+  border-color: #2d9e6e;
+  background: var(--success-soft);
+  color: var(--ink);
 }
 
 button {

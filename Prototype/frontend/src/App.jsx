@@ -5,12 +5,18 @@ const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 const RUNNING_STATUSES = new Set(["queued", "started", "deferred", "scheduled", "submitting", "pending"]);
 const STOPPABLE_STATUSES = new Set(["queued", "started", "deferred", "scheduled", "pending"]);
 const ROUTES = {
+  login: "login",
+  register: "register",
   grader: "grader",
   history: "history"
 };
 
 function routeFromHash() {
-  return window.location.hash === "#/history" ? ROUTES.history : ROUTES.grader;
+  const hash = window.location.hash;
+  if (hash === "#/login") return ROUTES.login;
+  if (hash === "#/register") return ROUTES.register;
+  if (hash === "#/history") return ROUTES.history;
+  return ROUTES.grader;
 }
 
 function relTime(unixTs) {
@@ -31,10 +37,66 @@ function StatusBadge({ status }) {
   return <span className={cls}>{label}</span>;
 }
 
+function DropZone({ label, accept, file, onFile, reusableHint }) {
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef(null);
+
+  function handleDrop(e) {
+    e.preventDefault();
+    setDragOver(false);
+    const dropped = e.dataTransfer.files?.[0];
+    if (dropped) onFile(dropped);
+  }
+
+  const classes = ["drop-zone", dragOver && "drop-zone-over", file && "drop-zone-filled"]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <div
+      className={classes}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inputRef.current?.click(); } }}
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }}
+      />
+      <span className="drop-zone-icon">{file ? "✅" : "📂"}</span>
+      <span className="drop-zone-cta">{label}</span>
+      {file
+        ? <span className="drop-zone-filename">{file.name}</span>
+        : <span className="drop-zone-hint">drag &amp; drop or click to browse</span>
+      }
+      {!file && reusableHint && <span className="reuse-hint">{reusableHint}</span>}
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState(routeFromHash);
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("ag_auth_token") || "");
+  const [authUser, setAuthUser] = useState(null);
+  const [authPending, setAuthPending] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState("");
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [mainZip, setMainZip] = useState(null);
   const [instructionsHtml, setInstructionsHtml] = useState(null);
+  const [instructionsText, setInstructionsText] = useState("");
   const [reusableInputs, setReusableInputs] = useState(null);
   const [submissionOptions, setSubmissionOptions] = useState([]);
   const [selectedSubmissions, setSelectedSubmissions] = useState([]);
@@ -75,6 +137,33 @@ function App() {
   const [deletingJobIds, setDeletingJobIds] = useState({});
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  const withToken = useCallback((url) => {
+    if (!authToken) {
+      return url;
+    }
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}token=${encodeURIComponent(authToken)}`;
+  }, [authToken]);
+
+  const apiFetch = useCallback(async (path, options = {}) => {
+    const headers = {
+      ...(options.headers || {}),
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    };
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+    });
+    if (res.status === 401) {
+      setAuthToken("");
+      setAuthUser(null);
+      setPage(ROUTES.login);
+      window.location.hash = "#/login";
+      throw new Error("Session expired. Please log in again.");
+    }
+    return res;
+  }, [authToken]);
+
   useEffect(() => {
     const onHashChange = () => setPage(routeFromHash());
     window.addEventListener("hashchange", onHashChange);
@@ -83,7 +172,14 @@ function App() {
   }, []);
 
   function navigateTo(nextPage) {
-    const nextHash = nextPage === ROUTES.history ? "#/history" : "#/";
+    const nextHash =
+      nextPage === ROUTES.history
+        ? "#/history"
+        : nextPage === ROUTES.login
+          ? "#/login"
+          : nextPage === ROUTES.register
+            ? "#/register"
+            : "#/";
     if (window.location.hash !== nextHash) {
       window.location.hash = nextHash;
     }
@@ -91,9 +187,65 @@ function App() {
   }
 
   useEffect(() => {
+    if (authToken) {
+      localStorage.setItem("ag_auth_token", authToken);
+      return;
+    }
+    localStorage.removeItem("ag_auth_token");
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setAuthUser(null);
+      setJobId("");
+      setStatus("idle");
+      setReusableInputs(null);
+      setSubmissionOptions([]);
+      setSelectedSubmissions([]);
+      localStorage.removeItem("ag_job_id");
+      if (![ROUTES.login, ROUTES.register].includes(page)) {
+        navigateTo(ROUTES.login);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const loadMe = async () => {
+      try {
+        const res = await apiFetch("/api/auth/me");
+        if (!res.ok) {
+          throw new Error("Unable to verify session");
+        }
+        const data = await res.json();
+        if (!cancelled) {
+          setAuthUser(data.user || null);
+          if ([ROUTES.login, ROUTES.register].includes(page)) {
+            navigateTo(ROUTES.grader);
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthToken("");
+          setAuthUser(null);
+          navigateTo(ROUTES.login);
+        }
+      }
+    };
+
+    loadMe();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiFetch, authToken, page]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setAvailableEvaluators([]);
+      return;
+    }
     const loadEvaluators = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/evaluators`);
+        const res = await apiFetch("/api/evaluators");
         if (!res.ok) {
           return;
         }
@@ -105,14 +257,24 @@ function App() {
       }
     };
     loadEvaluators();
-  }, []);
+  }, [apiFetch, authToken]);
 
   // Persist current job ID across page refreshes.
   useEffect(() => {
-    if (jobId) localStorage.setItem("ag_job_id", jobId);
-  }, [jobId]);
+    if (!authToken) {
+      localStorage.removeItem("ag_job_id");
+      return;
+    }
+    if (jobId) {
+      localStorage.setItem("ag_job_id", jobId);
+    }
+  }, [authToken, jobId]);
 
   useEffect(() => {
+    if (!authToken) {
+      setReusableInputs(null);
+      return;
+    }
     if (!jobId) {
       setReusableInputs(null);
       return;
@@ -121,7 +283,7 @@ function App() {
     let isCancelled = false;
     const loadReusableInputs = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/jobs/${jobId}/input-info`);
+        const res = await apiFetch(`/api/jobs/${jobId}/input-info`);
         if (!res.ok) {
           if (!isCancelled) {
             setReusableInputs(null);
@@ -143,9 +305,15 @@ function App() {
     return () => {
       isCancelled = true;
     };
-  }, [jobId, status]);
+  }, [apiFetch, authToken, jobId, status]);
 
   useEffect(() => {
+    if (!authToken) {
+      setSubmissionOptions([]);
+      setSelectedSubmissions([]);
+      setLoadingSubmissions(false);
+      return;
+    }
     if (!mainZip && !reusableInputs?.job_id) {
       setSubmissionOptions([]);
       setSelectedSubmissions([]);
@@ -164,7 +332,7 @@ function App() {
           form.append("reuse_job_id", reusableInputs.job_id);
         }
 
-        const res = await fetch(`${API_BASE}/api/submissions/preview`, {
+        const res = await apiFetch("/api/submissions/preview", {
           method: "POST",
           body: form
         });
@@ -196,11 +364,15 @@ function App() {
     return () => {
       isCancelled = true;
     };
-  }, [mainZip, reusableInputs]);
+  }, [apiFetch, authToken, mainZip, reusableInputs]);
 
   const fetchHistory = useCallback(async () => {
+    if (!authToken) {
+      setJobHistory([]);
+      return [];
+    }
     try {
-      const res = await fetch(`${API_BASE}/api/jobs`);
+      const res = await apiFetch("/api/jobs");
       if (!res.ok) return [];
       const data = await res.json();
       const jobs = data.jobs || [];
@@ -216,7 +388,7 @@ function App() {
 
           if (expectedHtmlCount > cachedHtmlCount) {
             try {
-              const artifactsRes = await fetch(`${API_BASE}/api/jobs/${expandedJobId}/artifacts`);
+              const artifactsRes = await apiFetch(`/api/jobs/${expandedJobId}/artifacts`);
               if (artifactsRes.ok) {
                 const artifactsData = await artifactsRes.json();
                 setHistoryArtifacts((prev) => ({
@@ -236,9 +408,12 @@ function App() {
       // history panel is non-critical
       return [];
     }
-  }, [expandedJobId, historyArtifacts]);
+  }, [apiFetch, authToken, expandedJobId, historyArtifacts]);
 
   const syncCurrentJobFromHistory = useCallback(async (targetJobId) => {
+    if (!authToken) {
+      return;
+    }
     const currentId = targetJobId || jobId;
     if (!currentId) {
       return;
@@ -262,7 +437,7 @@ function App() {
     // Pull artifacts for completed jobs so reports still show on refresh/reopen.
     if ((matched.artifact_count || 0) > 0) {
       try {
-        const res = await fetch(`${API_BASE}/api/jobs/${currentId}/artifacts`);
+        const res = await apiFetch(`/api/jobs/${currentId}/artifacts`);
         if (res.ok) {
           const data = await res.json();
           if (Array.isArray(data.files)) {
@@ -273,7 +448,7 @@ function App() {
         // Keep existing artifacts if artifact fetch fails.
       }
     }
-  }, [fetchHistory, jobId]);
+  }, [apiFetch, authToken, fetchHistory, jobId]);
 
   useEffect(() => {
     if (page !== ROUTES.history) {
@@ -285,22 +460,26 @@ function App() {
     return () => clearInterval(timer);
   }, [fetchHistory, page]);
 
+  const instructionsProvided = Boolean(instructionsHtml || instructionsText.trim());
   const canSubmit = useMemo(
     () => Boolean(
-      ((mainZip && instructionsHtml) || reusableInputs) &&
+      ((mainZip && instructionsProvided) || reusableInputs) &&
       (submissionOptions.length === 0 || selectedSubmissions.length > 0)
     ),
-    [mainZip, instructionsHtml, reusableInputs, submissionOptions.length, selectedSubmissions.length]
+    [mainZip, instructionsProvided, reusableInputs, submissionOptions.length, selectedSubmissions.length]
   );
 
   useEffect(() => {
+    if (!authToken) {
+      return;
+    }
     if (!jobId || ["finished", "failed", "stopped", "canceled"].includes(status) || streamConnected) {
       return;
     }
 
     const timer = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
+        const res = await apiFetch(`/api/jobs/${jobId}`);
         if (!res.ok) {
           if (res.status === 404) {
             await syncCurrentJobFromHistory(jobId);
@@ -321,9 +500,12 @@ function App() {
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [jobId, status, streamConnected, syncCurrentJobFromHistory]);
+  }, [apiFetch, authToken, jobId, status, streamConnected, syncCurrentJobFromHistory]);
 
   useEffect(() => {
+    if (!authToken) {
+      return;
+    }
     if (page !== ROUTES.grader || !jobId) {
       return;
     }
@@ -334,7 +516,7 @@ function App() {
     let isCancelled = false;
     const loadArtifactsForTerminalJob = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/jobs/${jobId}/artifacts`);
+        const res = await apiFetch(`/api/jobs/${jobId}/artifacts`);
         if (!res.ok) {
           return;
         }
@@ -351,15 +533,19 @@ function App() {
     return () => {
       isCancelled = true;
     };
-  }, [page, jobId, status]);
+  }, [apiFetch, authToken, page, jobId, status]);
 
   useEffect(() => {
+    if (!authToken) {
+      setStreamConnected(false);
+      return;
+    }
     if (!jobId || ["finished", "failed", "stopped", "canceled"].includes(status)) {
       setStreamConnected(false);
       return;
     }
 
-    const stream = new EventSource(`${API_BASE}/api/jobs/${jobId}/stream`);
+    const stream = new EventSource(`${API_BASE}/api/jobs/${jobId}/stream?token=${encodeURIComponent(authToken)}`);
 
     stream.onopen = () => {
       setStreamConnected(true);
@@ -409,7 +595,7 @@ function App() {
       setStreamConnected(false);
       stream.close();
     };
-  }, [jobId, status, syncCurrentJobFromHistory]);
+  }, [authToken, jobId, status, syncCurrentJobFromHistory]);
 
   useEffect(() => {
     if (!autoScrollStream || !streamPanelRef.current) {
@@ -430,9 +616,20 @@ function App() {
     setConfidence(null);
 
     const form = new FormData();
-    if (mainZip && instructionsHtml) {
+    if (mainZip && instructionsProvided) {
       form.append("main_zip", mainZip);
-      form.append("instructions_html", instructionsHtml);
+      if (instructionsHtml) {
+        form.append("instructions_html", instructionsHtml);
+      } else {
+        // Convert pasted text → HTML blob so the backend always receives an HTML file
+        const escaped = instructionsText
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        const htmlContent = `<html><body><pre>${escaped}</pre></body></html>`;
+        const blob = new Blob([htmlContent], { type: "text/html" });
+        form.append("instructions_html", new File([blob], "instructions.html", { type: "text/html" }));
+      }
     } else if (reusableInputs?.job_id) {
       form.append("reuse_job_id", reusableInputs.job_id);
     } else {
@@ -448,7 +645,7 @@ function App() {
     form.append("grading_context", gradingContext);
 
     try {
-      const res = await fetch(`${API_BASE}/api/jobs`, {
+      const res = await apiFetch("/api/jobs", {
         method: "POST",
         body: form
       });
@@ -479,7 +676,7 @@ function App() {
     setExpandedJobId(jid);
     if (!historyArtifacts[jid]) {
       try {
-        const res = await fetch(`${API_BASE}/api/jobs/${jid}/artifacts`);
+        const res = await apiFetch(`/api/jobs/${jid}/artifacts`);
         if (res.ok) {
           const data = await res.json();
           setHistoryArtifacts((prev) => ({ ...prev, [jid]: data.files || [] }));
@@ -491,7 +688,7 @@ function App() {
   }
 
   function openReport(jid, filename) {
-    setReportUrl(`${API_BASE}/api/jobs/${jid}/artifacts/${encodeURIComponent(filename)}`);
+    setReportUrl(withToken(`${API_BASE}/api/jobs/${jid}/artifacts/${encodeURIComponent(filename)}`));
     setReportTitle(filename);
   }
 
@@ -502,7 +699,7 @@ function App() {
 
     setCancelingJobIds((prev) => ({ ...prev, [targetJobId]: true }));
     try {
-      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}/cancel`, {
+      const res = await apiFetch(`/api/jobs/${targetJobId}/cancel`, {
         method: "POST"
       });
       const data = await res.json();
@@ -536,7 +733,7 @@ function App() {
     if (!targetJobId || deletingJobIds[targetJobId]) return;
     setDeletingJobIds((prev) => ({ ...prev, [targetJobId]: true }));
     try {
-      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/jobs/${targetJobId}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.detail || "Failed to delete job");
@@ -558,7 +755,7 @@ function App() {
     if (selectedJobIds.size === 0 || bulkDeleting) return;
     setBulkDeleting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/jobs`, {
+      const res = await apiFetch("/api/jobs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_ids: Array.from(selectedJobIds) }),
@@ -602,7 +799,7 @@ function App() {
 
     setResumingJobId(targetJobId);
     try {
-      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}/resume`, {
+      const res = await apiFetch(`/api/jobs/${targetJobId}/resume`, {
         method: "POST"
       });
       const data = await res.json();
@@ -637,6 +834,7 @@ function App() {
 
     setMainZip(null);
     setInstructionsHtml(null);
+    setInstructionsText("");
     setSubmissionOptions([]);
     setSelectedSubmissions([]);
     setLoadingSubmissions(true);
@@ -652,7 +850,7 @@ function App() {
     setMessage(`Loaded job ${job.job_id}. You can rerun all students or uncheck some to regrade selected submissions.`);
 
     try {
-      const res = await fetch(`${API_BASE}/api/jobs/${job.job_id}/artifacts`);
+      const res = await apiFetch(`/api/jobs/${job.job_id}/artifacts`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.files)) {
@@ -666,7 +864,7 @@ function App() {
     try {
       const form = new FormData();
       form.append("reuse_job_id", job.job_id);
-      const res = await fetch(`${API_BASE}/api/submissions/preview`, {
+      const res = await apiFetch("/api/submissions/preview", {
         method: "POST",
         body: form
       });
@@ -689,8 +887,162 @@ function App() {
     }, 100);
   }
 
+  async function submitLogin(event) {
+    event.preventDefault();
+    setAuthPending(true);
+    setAuthError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Login failed");
+      }
+      setAuthToken(data.token || "");
+      setAuthUser(data.user || null);
+      setLoginPassword("");
+      navigateTo(ROUTES.grader);
+    } catch (err) {
+      setAuthError(err.message || "Login failed");
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function submitRegister(event) {
+    event.preventDefault();
+    if (registerPassword !== registerConfirmPassword) {
+      setAuthError("Passwords do not match");
+      return;
+    }
+    setAuthPending(true);
+    setAuthError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: registerEmail, password: registerPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Registration failed");
+      }
+      setAuthToken(data.token || "");
+      setAuthUser(data.user || null);
+      setRegisterPassword("");
+      setRegisterConfirmPassword("");
+      navigateTo(ROUTES.grader);
+    } catch (err) {
+      setAuthError(err.message || "Registration failed");
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      if (authToken) {
+        await apiFetch("/api/auth/logout", { method: "POST" });
+      }
+    } catch {
+      // Best effort: clear local session even if logout request fails.
+    }
+    setAuthToken("");
+    setAuthUser(null);
+    setJobId("");
+    localStorage.removeItem("ag_job_id");
+    navigateTo(ROUTES.login);
+  }
+
   const isActiveJob = RUNNING_STATUSES.has(status);
   const canStopActiveJob = Boolean(jobId) && STOPPABLE_STATUSES.has(status);
+
+  if (!authToken || !authUser) {
+    const isLogin = page !== ROUTES.register;
+    return (
+      <main className="page">
+        <section className="hero auth-hero">
+          <p className="hero-kicker">Faculty Access</p>
+          <h1>SCC AutoGrade Platform</h1>
+          <p>Sign in to access your grading jobs, reports, and history. Each account sees only its own workspace.</p>
+        </section>
+
+        <section className="card auth-card">
+          <div className="auth-tabs">
+            <button
+              type="button"
+              className={isLogin ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
+              onClick={() => navigateTo(ROUTES.login)}
+            >
+              Login
+            </button>
+            <button
+              type="button"
+              className={!isLogin ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
+              onClick={() => navigateTo(ROUTES.register)}
+            >
+              Register
+            </button>
+          </div>
+
+          {isLogin ? (
+            <form onSubmit={submitLogin} className="form auth-form">
+              <label>
+                Email
+                <input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} required />
+              </label>
+              <label>
+                Password
+                <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required />
+              </label>
+              {authError && <p className="error">{authError}</p>}
+              <button type="submit" disabled={authPending}>{authPending ? "Signing in..." : "Sign In"}</button>
+            </form>
+          ) : (
+            <form onSubmit={submitRegister} className="form auth-form">
+              <label>
+                Email
+                <input type="email" value={registerEmail} onChange={(e) => setRegisterEmail(e.target.value)} required />
+              </label>
+              <label>
+                Password (minimum 8 characters)
+                <input
+                  type={showRegisterPassword ? "text" : "password"}
+                  minLength={8}
+                  value={registerPassword}
+                  onChange={(e) => setRegisterPassword(e.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Re-enter Password
+                <input
+                  type={showRegisterPassword ? "text" : "password"}
+                  minLength={8}
+                  value={registerConfirmPassword}
+                  onChange={(e) => setRegisterConfirmPassword(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="inline-checkbox">
+                <input
+                  type="checkbox"
+                  checked={showRegisterPassword}
+                  onChange={(e) => setShowRegisterPassword(e.target.checked)}
+                />
+                Show passwords
+              </label>
+              {authError && <p className="error">{authError}</p>}
+              <button type="submit" disabled={authPending}>{authPending ? "Creating account..." : "Create Account"}</button>
+            </form>
+          )}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="page">
@@ -713,7 +1065,7 @@ function App() {
 
       <section className="hero">
         <p className="hero-kicker">Grading Operations</p>
-        <h1>AutoGrade Command Center</h1>
+        <h1>SCC AutoGrade Center</h1>
         <p>
           {page === ROUTES.grader
             ? "Launch a grading run with your submissions and instructions, then follow every step live."
@@ -722,6 +1074,10 @@ function App() {
       </section>
 
       <section className="card nav-card">
+        <div className="auth-toolbar">
+          <span className="auth-user">Signed in as {authUser?.email}</span>
+          <button type="button" className="btn-ghost btn-sm" onClick={logout}>Log out</button>
+        </div>
           <button
             type="button"
             className={page === ROUTES.grader ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
@@ -745,27 +1101,58 @@ function App() {
       {page === ROUTES.grader && (
       <section className="card">
         <form onSubmit={submitJob} className="form">
-          <label>
-            Main submissions ZIP
-            <input type="file" accept=".zip" onChange={(e) => setMainZip(e.target.files?.[0] || null)} />
-            {!mainZip && reusableInputs?.main_zip_name && (
-              <span className="reuse-hint">Stored from unfinished job: {reusableInputs.main_zip_name}</span>
-            )}
-          </label>
 
-          <label>
-            Assignment instructions HTML
-            <input type="file" accept=".html,text/html" onChange={(e) => setInstructionsHtml(e.target.files?.[0] || null)} />
-            {!instructionsHtml && reusableInputs?.instructions_html_name && (
-              <span className="reuse-hint">Stored from unfinished job: {reusableInputs.instructions_html_name}</span>
-            )}
-          </label>
+          <div className="upload-steps">
+            {/* Step 1 — ZIP */}
+            <div className="upload-step">
+              <div className="upload-step-header">
+                <span className={`upload-step-number${mainZip ? " upload-step-number-done" : ""}`}>{mainZip ? "✅" : "1"}</span>
+                <span className="upload-step-title">Submissions ZIP</span>
+              </div>
+              <DropZone
+                label="Drop ZIP here or click to browse"
+                accept=".zip"
+                file={mainZip}
+                onFile={setMainZip}
+                reusableHint={!mainZip && reusableInputs?.main_zip_name ? `Stored: ${reusableInputs.main_zip_name}` : null}
+              />
+              <p className="upload-step-desc">Download from Moodle as a ZIP archive</p>
+            </div>
 
-          {reusableInputs && !(mainZip && instructionsHtml) && (
+            <div className="upload-step-arrow" aria-hidden="true">→</div>
+
+            {/* Step 2 — Instructions */}
+            <div className="upload-step">
+              <div className="upload-step-header">
+                <span className={`upload-step-number${instructionsProvided ? " upload-step-number-done" : ""}`}>{instructionsProvided ? "✅" : "2"}</span>
+                <span className="upload-step-title">Assignment Instructions</span>
+              </div>
+              <DropZone
+                label="Drop file here or click to browse"
+                accept=".html,.htm,.pdf,.doc,.docx,.txt"
+                file={instructionsHtml}
+                onFile={(f) => { setInstructionsHtml(f); setInstructionsText(""); }}
+                reusableHint={!instructionsHtml && reusableInputs?.instructions_html_name ? `Stored: ${reusableInputs.instructions_html_name}` : null}
+              />
+              <p className="upload-step-desc">Accepted: HTML, PDF, Word (.docx), TXT</p>
+              <div className="or-divider">— or paste below —</div>
+              <textarea
+                rows={5}
+                placeholder="Paste assignment instructions here (plain text or HTML)..."
+                value={instructionsText}
+                onChange={(e) => { setInstructionsText(e.target.value); if (e.target.value) setInstructionsHtml(null); }}
+                disabled={Boolean(instructionsHtml)}
+                className={instructionsText.trim() ? "textarea-filled" : ""}
+                style={{ opacity: instructionsHtml ? 0.45 : 1 }}
+              />
+            </div>
+          </div>
+
+          {reusableInputs && !(mainZip && instructionsProvided) && (
             <p className="reuse-banner">
               Reusing stored inputs from job {reusableInputs.job_id}
               {reusableInputs.reused_from_job_id ? ` (copied from ${reusableInputs.reused_from_job_id})` : ""}.
-              Select new files above if you want to replace them.
+              Upload new files above if you want to replace them.
             </p>
           )}
 
@@ -968,7 +1355,7 @@ function App() {
                       </button>
                     )}
                     <a
-                      href={`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`}
+                      href={withToken(`${API_BASE}/api/jobs/${jobId}/artifacts/${encodeURIComponent(file)}`)}
                       target="_blank"
                       rel="noreferrer"
                       className="btn-link btn-sm"
@@ -1139,7 +1526,7 @@ function App() {
                                       </button>
                                     )}
                                     <a
-                                      href={`${API_BASE}/api/jobs/${job.job_id}/artifacts/${encodeURIComponent(f)}`}
+                                      href={withToken(`${API_BASE}/api/jobs/${job.job_id}/artifacts/${encodeURIComponent(f)}`)}
                                       target="_blank"
                                       rel="noreferrer"
                                       className="btn-link btn-sm"
