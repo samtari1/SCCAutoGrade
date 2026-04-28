@@ -71,6 +71,9 @@ function App() {
   const [reportUrl, setReportUrl] = useState(null);
   const [reportTitle, setReportTitle] = useState("");
   const [cancelingJobIds, setCancelingJobIds] = useState({});
+  const [selectedJobIds, setSelectedJobIds] = useState(new Set());
+  const [deletingJobIds, setDeletingJobIds] = useState({});
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     const onHashChange = () => setPage(routeFromHash());
@@ -529,6 +532,69 @@ function App() {
     }
   }
 
+  async function deleteJob(targetJobId) {
+    if (!targetJobId || deletingJobIds[targetJobId]) return;
+    setDeletingJobIds((prev) => ({ ...prev, [targetJobId]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/${targetJobId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || "Failed to delete job");
+      }
+      if (targetJobId === jobId) {
+        setJobId(null);
+        setStatus(null);
+      }
+      setSelectedJobIds((prev) => { const next = new Set(prev); next.delete(targetJobId); return next; });
+      fetchHistory();
+    } catch (err) {
+      alert(err.message || "Failed to delete job");
+    } finally {
+      setDeletingJobIds((prev) => { const next = { ...prev }; delete next[targetJobId]; return next; });
+    }
+  }
+
+  async function deleteSelectedJobs() {
+    if (selectedJobIds.size === 0 || bulkDeleting) return;
+    setBulkDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_ids: Array.from(selectedJobIds) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to delete jobs");
+      const deletedSet = new Set(data.deleted || []);
+      if (deletedSet.has(jobId)) {
+        setJobId(null);
+        setStatus(null);
+      }
+      setSelectedJobIds(new Set());
+      fetchHistory();
+    } catch (err) {
+      alert(err.message || "Failed to delete jobs");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  function toggleSelectJob(jid) {
+    setSelectedJobIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jid)) next.delete(jid); else next.add(jid);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedJobIds.size === jobHistory.length) {
+      setSelectedJobIds(new Set());
+    } else {
+      setSelectedJobIds(new Set(jobHistory.map((j) => j.job_id)));
+    }
+  }
+
   async function resumeJob(targetJobId) {
     if (!targetJobId || resumingJobId) {
       return;
@@ -937,7 +1003,19 @@ function App() {
       <section className="card">
         <div className="history-header">
           <h2>Job History</h2>
-          <button type="button" className="btn-ghost btn-sm" onClick={fetchHistory}>Refresh</button>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            {selectedJobIds.size > 0 && (
+              <button
+                type="button"
+                className="btn-danger btn-sm"
+                onClick={deleteSelectedJobs}
+                disabled={bulkDeleting}
+              >
+                {bulkDeleting ? "Deleting..." : `Delete Selected (${selectedJobIds.size})`}
+              </button>
+            )}
+            <button type="button" className="btn-ghost btn-sm" onClick={fetchHistory}>Refresh</button>
+          </div>
         </div>
         {jobHistory.length === 0 ? (
           <p className="history-empty">No grading jobs found.</p>
@@ -945,6 +1023,14 @@ function App() {
           <table className="history-table">
             <thead>
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    checked={selectedJobIds.size === jobHistory.length && jobHistory.length > 0}
+                    onChange={toggleSelectAll}
+                    title="Select all"
+                  />
+                </th>
                 <th>Time</th>
                 <th>Status</th>
                 <th>Assignment</th>
@@ -957,6 +1043,13 @@ function App() {
               {jobHistory.map((job) => (
                 <Fragment key={job.job_id}>
                   <tr className="history-row">
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedJobIds.has(job.job_id)}
+                        onChange={() => toggleSelectJob(job.job_id)}
+                      />
+                    </td>
                     <td className="history-time">{relTime(job.created_at)}</td>
                     <td><StatusBadge status={job.status} /></td>
                     <td className="history-assignment">{job.assignment_name || "—"}</td>
@@ -987,11 +1080,21 @@ function App() {
                       >
                         {expandedJobId === job.job_id ? "▲ Hide" : "▼ Reports"}
                       </button>
+                      <button
+                        type="button"
+                        className="btn-danger btn-sm"
+                        onClick={() => deleteJob(job.job_id)}
+                        disabled={Boolean(deletingJobIds[job.job_id])}
+                        title="Delete job"
+                        aria-label="Delete job"
+                      >
+                        {deletingJobIds[job.job_id] ? "⏳" : "🗑️"}
+                      </button>
                     </td>
                   </tr>
                   {expandedJobId === job.job_id && (
                     <tr className="history-expand-row">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         {!historyArtifacts[job.job_id] ? (
                           <span className="history-loading">Loading…</span>
                         ) : historyArtifacts[job.job_id].filter(f => f.endsWith('.html')).length === 0 ? (

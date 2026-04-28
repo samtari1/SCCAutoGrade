@@ -733,6 +733,62 @@ async def stream_job(job_id: str):
     )
 
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str) -> dict:
+    """Permanently delete a job directory from disk."""
+    # Validate job_id is a UUID to prevent path traversal.
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
+
+    job_dir = (JOBS_DIR / job_id).resolve()
+    try:
+        job_dir.relative_to(JOBS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
+
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    shutil.rmtree(job_dir)
+    return {"deleted": job_id}
+
+
+@app.delete("/api/jobs")
+def delete_jobs_bulk(body: dict = Body(...)) -> dict:
+    """Permanently delete multiple job directories from disk."""
+    job_ids = body.get("job_ids", [])
+    if not isinstance(job_ids, list) or not job_ids:
+        raise HTTPException(status_code=400, detail="job_ids must be a non-empty list")
+
+    deleted = []
+    errors = []
+    jobs_dir_resolved = JOBS_DIR.resolve()
+    for job_id in job_ids:
+        try:
+            uuid.UUID(str(job_id))
+        except (ValueError, AttributeError):
+            errors.append({"job_id": job_id, "error": "Invalid job ID"})
+            continue
+
+        job_dir = (JOBS_DIR / str(job_id)).resolve()
+        try:
+            job_dir.relative_to(jobs_dir_resolved)
+        except ValueError:
+            errors.append({"job_id": job_id, "error": "Invalid job ID"})
+            continue
+
+        if not job_dir.exists():
+            errors.append({"job_id": job_id, "error": "Not found"})
+            continue
+
+        shutil.rmtree(job_dir)
+        deleted.append(job_id)
+
+    return {"deleted": deleted, "errors": errors}
+
+
 @app.get("/api/jobs/{job_id}/artifacts")
 def list_artifacts(job_id: str) -> dict:
     output_dir = JOBS_DIR / job_id / "output"

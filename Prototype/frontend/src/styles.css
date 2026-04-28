@@ -561,8 +561,14 @@ a {
 .history-actions {
   display: flex;
   gap: 0.4rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: center;
+}
+
+.history-actions button,
+.history-actions a {
+  white-space: nowrap;
 }
 
 .history-expand-row td {
