@@ -1,3 +1,21 @@
+/* Make Start Grading Job button larger and more prominent */
+.start-grading-btn {
+  font-size: 1.25rem;
+  padding: 1rem 2.5rem;
+  width: 100%;
+  max-width: 400px;
+  margin: 1.5rem auto 0 auto;
+  display: block;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 0.5rem;
+  font-weight: bold;
+  box-shadow: 0 2px 8px rgba(37,99,235,0.15);
+  transition: background 0.2s;
+}
+.start-grading-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
 :root {
   color-scheme: light;
   --ink: #221b3d;
@@ -64,7 +82,7 @@ body {
 }
 
 .auth-hero {
-  text-align: center;
+  text-align: left;
 }
 
 .auth-hero p {

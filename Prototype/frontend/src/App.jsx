@@ -83,6 +83,7 @@ function DropZone({ label, accept, file, onFile, reusableHint }) {
 }
 
 function App() {
+    const [showAdvanced, setShowAdvanced] = useState(false);
   const [page, setPage] = useState(routeFromHash);
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("ag_auth_token") || "");
   const [authUser, setAuthUser] = useState(null);
@@ -964,30 +965,13 @@ function App() {
     const isLogin = page !== ROUTES.register;
     return (
       <main className="page">
-        <section className="hero auth-hero">
-          <p className="hero-kicker">Faculty Access</p>
+        <section className="hero auth-hero" style={{ textAlign: 'center', alignItems: 'center' }}>
           <h1>SCC AutoGrade Platform</h1>
-          <p>Sign in to access your grading jobs, reports, and history. Each account sees only its own workspace.</p>
+          <p>Sign in to access your grading jobs, reports, and history. </p>
+          <p>Each account sees only its own workspace.</p>
         </section>
 
         <section className="card auth-card">
-          <div className="auth-tabs">
-            <button
-              type="button"
-              className={isLogin ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
-              onClick={() => navigateTo(ROUTES.login)}
-            >
-              Login
-            </button>
-            <button
-              type="button"
-              className={!isLogin ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
-              onClick={() => navigateTo(ROUTES.register)}
-            >
-              Register
-            </button>
-          </div>
-
           {isLogin ? (
             <form onSubmit={submitLogin} className="form auth-form">
               <label>
@@ -1000,6 +984,12 @@ function App() {
               </label>
               {authError && <p className="error">{authError}</p>}
               <button type="submit" disabled={authPending}>{authPending ? "Signing in..." : "Sign In"}</button>
+              <div style={{ marginTop: '1em', textAlign: 'center' }}>
+                Don't have an account yet?{' '}
+                <a href="#" onClick={e => { e.preventDefault(); navigateTo(ROUTES.register); }} style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}>
+                  Register.
+                </a>
+              </div>
             </form>
           ) : (
             <form onSubmit={submitRegister} className="form auth-form">
@@ -1027,7 +1017,7 @@ function App() {
                   required
                 />
               </label>
-              <label className="inline-checkbox">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                 <input
                   type="checkbox"
                   checked={showRegisterPassword}
@@ -1037,6 +1027,12 @@ function App() {
               </label>
               {authError && <p className="error">{authError}</p>}
               <button type="submit" disabled={authPending}>{authPending ? "Creating account..." : "Create Account"}</button>
+              <div style={{ marginTop: '1em', textAlign: 'center' }}>
+                Already have an account?{' '}
+                <a href="#" onClick={e => { e.preventDefault(); navigateTo(ROUTES.login); }} style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}>
+                  Login.
+                </a>
+              </div>
             </form>
           )}
         </section>
@@ -1063,40 +1059,85 @@ function App() {
         </div>
       )}
 
-      <section className="hero">
-        <p className="hero-kicker">Grading Operations</p>
-        <h1>SCC AutoGrade Center</h1>
+      <section className="hero" style={{ textAlign: 'left', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <img src="/logo.png" alt="SCC AutoGrade Logo" style={{ width: 48, height: 48, verticalAlign: 'middle' }} />
+            <h1 style={{ margin: 0 }}>SCC AutoGrade Center</h1>
+          </div>
+          {authUser && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1em', paddingRight: '2em' }}>
+              <span className="auth-user">Signed in as {authUser.email}</span>
+              <button type="button" className="btn-ghost btn-sm" onClick={logout}>Log out</button>
+            </div>
+          )}
+        </div>
         <p>
           {page === ROUTES.grader
             ? "Launch a grading run with your submissions and instructions, then follow every step live."
             : "Review every grading batch, reopen reports, and jump any run back into the Grader."}
         </p>
       </section>
-
-      <section className="card nav-card">
-        <div className="auth-toolbar">
-          <span className="auth-user">Signed in as {authUser?.email}</span>
-          <button type="button" className="btn-ghost btn-sm" onClick={logout}>Log out</button>
-        </div>
-          <button
-            type="button"
-            className={page === ROUTES.grader ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
-            onClick={() => navigateTo(ROUTES.grader)}
-            aria-current={page === ROUTES.grader ? "page" : undefined}
-            aria-selected={page === ROUTES.grader}
-          >
-            Grading
-          </button>
-          <button
-            type="button"
-            className={page === ROUTES.history ? "btn-ghost nav-btn nav-btn-active" : "btn-ghost nav-btn"}
-            onClick={() => navigateTo(ROUTES.history)}
-            aria-current={page === ROUTES.history ? "page" : undefined}
-            aria-selected={page === ROUTES.history}
-          >
-            History
-          </button>
-      </section>
+      <nav
+        className="nav-tabs"
+        style={{
+          display: 'flex',
+          gap: 0,
+          borderBottom: '2px solid #e0e0e0',
+          marginBottom: '0.2em',
+          marginTop: '1em',
+          background: '#fff',
+          borderTopLeftRadius: '12px',
+          borderTopRightRadius: '12px',
+          boxShadow: '0 2px 8px 0 rgba(0,0,0,0.04)',
+          paddingLeft: '1.5em',
+        }}
+      >
+        <button
+          type="button"
+          className={page === ROUTES.grader ? "tab-btn tab-btn-active" : "tab-btn"}
+          onClick={() => navigateTo(ROUTES.grader)}
+          aria-current={page === ROUTES.grader ? "page" : undefined}
+          aria-selected={page === ROUTES.grader}
+          style={{
+            border: 'none',
+            borderBottom: page === ROUTES.grader ? '3px solid #1976d2' : '3px solid transparent',
+            background: 'none',
+            color: page === ROUTES.grader ? '#1976d2' : '#333',
+            fontWeight: page === ROUTES.grader ? 600 : 500,
+            padding: '0.75em 2.5em',
+            fontSize: '1.1em',
+            cursor: 'pointer',
+            outline: 'none',
+            borderRadius: '8px 8px 0 0',
+            transition: 'color 0.15s, border-bottom 0.15s',
+          }}
+        >
+          Grading
+        </button>
+        <button
+          type="button"
+          className={page === ROUTES.history ? "tab-btn tab-btn-active" : "tab-btn"}
+          onClick={() => navigateTo(ROUTES.history)}
+          aria-current={page === ROUTES.history ? "page" : undefined}
+          aria-selected={page === ROUTES.history}
+          style={{
+            border: 'none',
+            borderBottom: page === ROUTES.history ? '3px solid #1976d2' : '3px solid transparent',
+            background: 'none',
+            color: page === ROUTES.history ? '#1976d2' : '#333',
+            fontWeight: page === ROUTES.history ? 600 : 500,
+            padding: '0.75em 2.5em',
+            fontSize: '1.1em',
+            cursor: 'pointer',
+            outline: 'none',
+            borderRadius: '8px 8px 0 0',
+            transition: 'color 0.15s, border-bottom 0.15s',
+          }}
+        >
+          History
+        </button>
+      </nav>
 
       {page === ROUTES.grader && (
       <section className="card">
@@ -1104,6 +1145,7 @@ function App() {
 
           <div className="upload-steps">
             {/* Step 1 — ZIP */}
+
             <div className="upload-step">
               <div className="upload-step-header">
                 <span className={`upload-step-number${mainZip ? " upload-step-number-done" : ""}`}>{mainZip ? "✅" : "1"}</span>
@@ -1116,7 +1158,87 @@ function App() {
                 onFile={setMainZip}
                 reusableHint={!mainZip && reusableInputs?.main_zip_name ? `Stored: ${reusableInputs.main_zip_name}` : null}
               />
-              <p className="upload-step-desc">Download from Moodle as a ZIP archive</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1em', margin: '0.5em 0' }}>
+                <p className="upload-step-desc" style={{ margin: 0 }}>Download from Moodle as a ZIP archive</p>
+                <a
+                  href="/ExampleAssignments/MySQLAssignment.zip"
+                  download
+                  className="btn-ghost btn-sm"
+                  style={{ textDecoration: 'none' }}
+                >
+                  Download Example ZIP
+                </a>
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={async () => {
+                    // Fetch the example zip as a blob and load it into the DropZone
+                    const resp = await fetch('/ExampleAssignments/MySQLAssignment.zip');
+                    const blob = await resp.blob();
+                    const file = new File([blob], 'MySQLAssignment.zip', { type: 'application/zip' });
+                    setMainZip(file);
+                  }}
+                >
+                  Load Example
+                </button>
+              </div>
+
+              {/* Move submission-picker here, under ZIP section */}
+              {(loadingSubmissions || submissionOptions.length > 0) && (
+                <section className="submission-picker" aria-label="Submission selection">
+                  <div className="submission-toolbar">
+                    <strong>
+                      Submissions
+                      {submissionOptions.length > 0 ? ` (${selectedSubmissions.length}/${submissionOptions.length} selected)` : ""}
+                    </strong>
+                    {submissionOptions.length > 0 && (
+                      <div className="submission-actions">
+                        <button
+                          type="button"
+                          className="btn-ghost btn-sm"
+                          onClick={() => setSelectedSubmissions(submissionOptions)}
+                        >
+                          Check all
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost btn-sm"
+                          onClick={() => setSelectedSubmissions([])}
+                        >
+                          Uncheck all
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {loadingSubmissions ? (
+                    <p className="submission-empty">Loading submissions from ZIP...</p>
+                  ) : submissionOptions.length === 0 ? (
+                    <p className="submission-empty">No submissions found to preview.</p>
+                  ) : (
+                    <div className="submission-list">
+                      {submissionOptions.map((student) => {
+                        const checked = selectedSubmissions.includes(student);
+                        return (
+                          <label key={student} className="submission-option">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedSubmissions((prev) => [...prev, student]);
+                                } else {
+                                  setSelectedSubmissions((prev) => prev.filter((item) => item !== student));
+                                }
+                              }}
+                            />
+                            <span>{student}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
 
             <div className="upload-step-arrow" aria-hidden="true">→</div>
@@ -1134,7 +1256,31 @@ function App() {
                 onFile={(f) => { setInstructionsHtml(f); setInstructionsText(""); }}
                 reusableHint={!instructionsHtml && reusableInputs?.instructions_html_name ? `Stored: ${reusableInputs.instructions_html_name}` : null}
               />
-              <p className="upload-step-desc">Accepted: HTML, PDF, Word (.docx), TXT</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1em', margin: '0.5em 0' }}>
+                <p className="upload-step-desc" style={{ margin: 0 }}>Accepted: HTML, PDF, Word (.docx), TXT</p>
+                <a
+                  href="/ExampleAssignments/Lab%20Assignment.html"
+                  download
+                  className="btn-ghost btn-sm"
+                  style={{ textDecoration: 'none' }}
+                >
+                  Download Example
+                </a>
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={async () => {
+                    // Fetch the example HTML as a blob and load it into the DropZone
+                    const resp = await fetch('/ExampleAssignments/Lab%20Assignment.html');
+                    const blob = await resp.blob();
+                    const file = new File([blob], 'Lab Assignment.html', { type: 'text/html' });
+                    setInstructionsHtml(file);
+                    setInstructionsText("");
+                  }}
+                >
+                  Load Example
+                </button>
+              </div>
               <div className="or-divider">— or paste below —</div>
               <textarea
                 rows={5}
@@ -1156,118 +1302,79 @@ function App() {
             </p>
           )}
 
-          {(loadingSubmissions || submissionOptions.length > 0) && (
-            <section className="submission-picker" aria-label="Submission selection">
-              <div className="submission-toolbar">
-                <strong>
-                  Submissions
-                  {submissionOptions.length > 0 ? ` (${selectedSubmissions.length}/${submissionOptions.length} selected)` : ""}
-                </strong>
-                {submissionOptions.length > 0 && (
-                  <div className="submission-actions">
-                    <button
-                      type="button"
-                      className="btn-ghost btn-sm"
-                      onClick={() => setSelectedSubmissions(submissionOptions)}
-                    >
-                      Check all
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-ghost btn-sm"
-                      onClick={() => setSelectedSubmissions([])}
-                    >
-                      Uncheck all
-                    </button>
-                  </div>
-                )}
+
+
+          <div className="advanced-settings-panel" style={{margin: '1.5em 0'}}>
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              style={{marginBottom: showAdvanced ? '1em' : 0}}
+              onClick={() => setShowAdvanced((v) => !v)}
+              aria-expanded={showAdvanced}
+            >
+              {showAdvanced ? 'Hide Advanced Settings' : 'Show Advanced Settings'}
+            </button>
+            {showAdvanced && (
+              <div className="advanced-settings-content" style={{border: '1px solid #eee', borderRadius: 6, padding: '1em', background: '#fafcff'}}>
+                <label>
+                  Evaluator
+                  <select value={evaluatorKey} onChange={(e) => setEvaluatorKey(e.target.value)}>
+                    <option value="auto">auto (use routing)</option>
+                    {availableEvaluators.map((item) => (
+                      <option value={item} key={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <fieldset className="options-grid">
+                  <legend>Multi-Agent Grading (Advanced)</legend>
+
+                  <label className="inline-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={multiAgentGrading}
+                      onChange={(e) => setMultiAgentGrading(e.target.checked)}
+                    />
+                    Enable grader + reviewer + resolver
+                  </label>
+
+                  <label>
+                    Final score disagreement threshold
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={disagreementThreshold}
+                      onChange={(e) => setDisagreementThreshold(e.target.value)}
+                      disabled={!multiAgentGrading}
+                    />
+                  </label>
+
+                  <label>
+                    Per-part disagreement threshold
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={partDisagreementThreshold}
+                      onChange={(e) => setPartDisagreementThreshold(e.target.value)}
+                      disabled={!multiAgentGrading}
+                    />
+                  </label>
+                </fieldset>
+
+                <label>
+                  Instructor Notes / Grading Context (optional)
+                  <textarea
+                    rows={5}
+                    placeholder="Example: This week, grade only weekly progress reports. No code required. If a submission is a proposal, evaluate whether it aligns with final project requirements."
+                    value={gradingContext}
+                    onChange={(e) => setGradingContext(e.target.value)}
+                  />
+                </label>
               </div>
-              {loadingSubmissions ? (
-                <p className="submission-empty">Loading submissions from ZIP...</p>
-              ) : submissionOptions.length === 0 ? (
-                <p className="submission-empty">No submissions found to preview.</p>
-              ) : (
-                <div className="submission-list">
-                  {submissionOptions.map((student) => {
-                    const checked = selectedSubmissions.includes(student);
-                    return (
-                      <label key={student} className="submission-option">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedSubmissions((prev) => [...prev, student]);
-                            } else {
-                              setSelectedSubmissions((prev) => prev.filter((item) => item !== student));
-                            }
-                          }}
-                        />
-                        <span>{student}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          )}
-
-          <label>
-            Evaluator
-            <select value={evaluatorKey} onChange={(e) => setEvaluatorKey(e.target.value)}>
-              <option value="auto">auto (use routing)</option>
-              {availableEvaluators.map((item) => (
-                <option value={item} key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-
-          <fieldset className="options-grid">
-            <legend>Multi-Agent Grading (Advanced)</legend>
-
-            <label className="inline-checkbox">
-              <input
-                type="checkbox"
-                checked={multiAgentGrading}
-                onChange={(e) => setMultiAgentGrading(e.target.checked)}
-              />
-              Enable grader + reviewer + resolver
-            </label>
-
-            <label>
-              Final score disagreement threshold
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={disagreementThreshold}
-                onChange={(e) => setDisagreementThreshold(e.target.value)}
-                disabled={!multiAgentGrading}
-              />
-            </label>
-
-            <label>
-              Per-part disagreement threshold
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={partDisagreementThreshold}
-                onChange={(e) => setPartDisagreementThreshold(e.target.value)}
-                disabled={!multiAgentGrading}
-              />
-            </label>
-          </fieldset>
-
-          <label>
-            Instructor Notes / Grading Context (optional)
-            <textarea
-              rows={5}
-              placeholder="Example: This week, grade only weekly progress reports. No code required. If a submission is a proposal, evaluate whether it aligns with final project requirements."
-              value={gradingContext}
-              onChange={(e) => setGradingContext(e.target.value)}
-            />
-          </label>
+            )}
+          </div>
 
           <button type="submit" disabled={!canSubmit || status === "submitting"}>
             {status === "submitting" ? "Submitting..." : "Start Grading Job"}
