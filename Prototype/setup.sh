@@ -44,4 +44,12 @@ if [[ ! -f "$ROOT_DIR/backend/.env" && -f "$ROOT_DIR/backend/.env.example" ]]; t
   cp "$ROOT_DIR/backend/.env.example" "$ROOT_DIR/backend/.env"
 fi
 
+# Initialize auth.db if it does not exist
+AUTH_DB_PATH="$ROOT_DIR/backend/data/auth.db"
+INIT_AUTH_SCRIPT="$ROOT_DIR/backend/scripts/init_auth_db.py"
+if [[ ! -f "$AUTH_DB_PATH" ]]; then
+  echo "[setup] Initializing auth.db ..."
+  "$ROOT_DIR/.venv/bin/python" "$INIT_AUTH_SCRIPT"
+fi
+
 echo "[setup] Done. Next: ./start.sh"
