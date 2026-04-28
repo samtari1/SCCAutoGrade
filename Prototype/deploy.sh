@@ -85,13 +85,13 @@ require_cmd npm
 require_cmd curl
 require_cmd systemctl
 
-log "Using repo directory: $REPO_DIR"
-log "Using app directory: $ROOT_DIR"
+# log "Using repo directory: $REPO_DIR"
+# log "Using app directory: $ROOT_DIR"
 
-log "Pulling latest code from origin..."
-git -C "$REPO_DIR" fetch origin
-CURRENT_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
-git -C "$REPO_DIR" pull --ff-only origin "$CURRENT_BRANCH"
+# log "Pulling latest code from origin..."
+# git -C "$REPO_DIR" fetch origin
+# CURRENT_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
+# git -C "$REPO_DIR" pull --ff-only origin "$CURRENT_BRANCH"
 
 log "Running setup to sync backend/frontend dependencies..."
 "$ROOT_DIR/setup.sh"
@@ -127,6 +127,9 @@ run_as_root systemctl is-active --quiet "$API_SERVICE"
 for svc in "${WORKER_SERVICES[@]}"; do
   run_as_root systemctl is-active --quiet "$svc"
 done
+
+log "Waiting for API to be ready..."
+sleep 5
 
 log "Running health checks..."
 curl --fail --silent --show-error http://127.0.0.1:8010/api/health >/dev/null
