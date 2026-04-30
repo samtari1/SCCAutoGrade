@@ -219,3 +219,4 @@ Prototype/frontend/.vite/
 
 # Local databases
 *.sqlite3
+auth.db
