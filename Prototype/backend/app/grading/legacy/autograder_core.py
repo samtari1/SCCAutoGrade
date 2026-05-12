@@ -10,7 +10,7 @@ import tempfile
 import shutil
 from pathlib import Path
 import openai
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Tuple
 import json
 import re
 import html
@@ -221,6 +221,152 @@ class AutoGrader:
 
         return "\n\n".join(blocks)
 
+    _SCREENSHOT_EXTENSIONS = frozenset(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp'))
+    _PRESENTATION_EXTENSIONS = frozenset(('.ppt', '.pptx', '.key', '.odp'))
+    _VIDEO_EXTENSIONS = frozenset(('.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'))
+    _DOCUMENT_EXTENSIONS = frozenset(('.pdf', '.doc', '.docx', '.odt', '.pages', '.rtf', '.txt', '.md', '.html', '.htm'))
+    _ARTIFACT_KEYWORDS = {
+        'presentation': ('presentation', 'slides', 'slide', 'deck', 'powerpoint', 'pitch'),
+        'video': ('video', 'recording', 'walkthrough', 'demo', 'screencast', 'capture'),
+        'screenshot': ('screenshot', 'screen shot', 'screen-shot'),
+        'report': ('report', 'reflection', 'summary', 'documentation', 'writeup', 'write-up', 'observations'),
+    }
+
+    def _classify_submission_artifact(self, relative_path: str) -> Optional[str]:
+        normalized = relative_path.replace('\\', '/').lower()
+        file_name = os.path.basename(normalized)
+        ext = Path(file_name).suffix.lower()
+
+        if ext in self._SCREENSHOT_EXTENSIONS:
+            return 'screenshot'
+        if ext in self._PRESENTATION_EXTENSIONS:
+            return 'presentation'
+        if ext in self._VIDEO_EXTENSIONS:
+            return 'video'
+
+        for category, keywords in self._ARTIFACT_KEYWORDS.items():
+            if any(keyword in normalized for keyword in keywords):
+                if category == 'presentation' and ext in self._DOCUMENT_EXTENSIONS:
+                    return 'presentation'
+                if category == 'video':
+                    return 'video'
+                if category == 'screenshot':
+                    return 'screenshot'
+                if category == 'report' and ext in self._DOCUMENT_EXTENSIONS:
+                    return 'report'
+
+        if ext in self._DOCUMENT_EXTENSIONS:
+            return 'document'
+        return None
+
+    def _submission_inventory_note(self, directory: str) -> str:
+        """Return a summary of non-code deliverables present in the submission directory."""
+        categorized: Dict[str, List[str]] = {
+            'presentation': [],
+            'video': [],
+            'screenshot': [],
+            'report': [],
+            'document': [],
+        }
+        ignored_exts = {'.zip', '.7z', '.rar', '.tar', '.gz', '.dll', '.exe', '.pdb', '.cache', '.class', '.o', '.so', '.dylib'}
+
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+            for file in files:
+                lowered = file.lower()
+                if Path(lowered).suffix in ignored_exts or lowered.endswith(('.g.cs', '.generated.cs', '.assemblyinfo.cs')):
+                    continue
+                rel = os.path.relpath(os.path.join(root, file), directory)
+                category = self._classify_submission_artifact(rel)
+                if category:
+                    categorized[category].append(rel)
+
+        detected_categories = [category for category, items in categorized.items() if items]
+        if not detected_categories:
+            return ""
+
+        labels = {
+            'presentation': 'presentation/slides',
+            'video': 'video/recording',
+            'screenshot': 'screenshots/images',
+            'report': 'report/write-up',
+            'document': 'supporting documents',
+        }
+        summary = ', '.join(
+            f"{labels[category]}={len(categorized[category])}"
+            for category in detected_categories
+        )
+
+        lines = [
+            f"[SUBMISSION INVENTORY: detected non-code deliverables -> {summary}]",
+            "Use these file listings to evaluate required supporting materials before marking them missing.",
+        ]
+
+        if categorized['presentation']:
+            lines.append(
+                f"[PRESENTATION FILES DETECTED: {len(categorized['presentation'])} file(s) included — do not mark a presentation/slides deliverable missing if one of these satisfies the requirement format.]"
+            )
+        if categorized['video']:
+            lines.append(
+                f"[VIDEO FILES DETECTED: {len(categorized['video'])} file(s) included — do not mark a video/demo deliverable missing if one of these satisfies the requirement format.]"
+            )
+        if categorized['screenshot']:
+            lines.append(
+                f"[SCREENSHOT FILES DETECTED: {len(categorized['screenshot'])} image file(s) included — treat screenshot/image requirements as fulfilled unless the instructions demand specific missing content.]"
+            )
+
+        for category in detected_categories:
+            lines.append(f"{labels[category]}:")
+            for rel in sorted(set(categorized[category])):
+                lines.append(f"  - {rel}")
+
+        return '\n'.join(lines)
+
+    def _submission_tree_note(self, directory: str, max_entries: int = 200, max_depth: int = 4) -> str:
+        """Return a compact tree view of the submission folder contents."""
+        root_path = Path(directory)
+        lines = [f"[SUBMISSION TREE: compact view of files/folders under {root_path.name or '.'}]"]
+        emitted = 0
+        truncated = False
+
+        def walk(path: Path, prefix: str = "", depth: int = 0) -> None:
+            nonlocal emitted, truncated
+            if truncated or depth > max_depth:
+                return
+
+            try:
+                children = [
+                    child for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+                    if not child.name.startswith('.') and child.name != '__MACOSX'
+                ]
+            except OSError:
+                return
+
+            visible_children = []
+            for child in children:
+                if child.is_dir() and self._is_ignored_directory(child.name):
+                    continue
+                visible_children.append(child)
+
+            for idx, child in enumerate(visible_children):
+                if emitted >= max_entries:
+                    truncated = True
+                    return
+
+                connector = "└── " if idx == len(visible_children) - 1 else "├── "
+                suffix = "/" if child.is_dir() else ""
+                lines.append(f"{prefix}{connector}{child.name}{suffix}")
+                emitted += 1
+
+                if child.is_dir():
+                    extension = "    " if idx == len(visible_children) - 1 else "│   "
+                    walk(child, prefix + extension, depth + 1)
+
+        walk(root_path)
+        if truncated:
+            lines.append(f"... tree truncated after {max_entries} entries")
+        return '\n'.join(lines)
+
     def _extract_submission_from_nested_structure(self, zip_path: str) -> str:
         temp_dir = tempfile.mkdtemp()
         try:
@@ -272,21 +418,21 @@ class AutoGrader:
                     if lowered.endswith('.zip'):
                         content = self._extract_submission_from_nested_structure(os.path.join(root, file))
                         if content:
-                            return self._append_screenshot_note(content, directory)
+                            return self._append_submission_artifact_notes(content, directory)
                     elif lowered.endswith('.7z'):
                         content = self._extract_submission_from_7z_structure(os.path.join(root, file))
                         if content:
-                            return self._append_screenshot_note(content, directory)
+                            return self._append_submission_artifact_notes(content, directory)
 
         if not matched_files:
             # Weekly reports can be text/docx/pdf/pptx without SQL/code files.
             report_text = self._collect_report_documents(directory)
             if report_text:
                 print(f"  ℹ️  Falling back to weekly report documents in: {os.path.basename(directory)}")
-                return self._append_screenshot_note(report_text, directory)
+                return self._append_submission_artifact_notes(report_text, directory)
             return ""
 
-        return self._append_screenshot_note(
+        return self._append_submission_artifact_notes(
             self._combine_source_files(directory, matched_files), directory
         )
     
@@ -332,37 +478,71 @@ class AutoGrader:
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
         return '\n'.join(lines)
 
+    def _make_instruction_part(self, part_num: int, title: str, requirements: str) -> Dict[str, str]:
+        title = (title or f'Part {part_num}').strip() or f'Part {part_num}'
+        requirements = (requirements or '').strip()
+        is_optional = bool(
+            re.search(r'optional|stretch', title, re.IGNORECASE)
+            or re.search(r'\boptional\b|\bstretch\b', requirements, re.IGNORECASE)
+        )
+        return {
+            'key': f'part{part_num}',
+            'part_num': str(part_num),
+            'title': title,
+            'requirements': requirements,
+            'is_optional': is_optional,
+        }
+
     def extract_assignment_parts(self, instructions_html: str) -> List[Dict[str, str]]:
         """Extract assignment part metadata from HTML headings."""
         if not instructions_html:
             return []
 
-        part_pattern = re.compile(r'<h2>\s*Part\s*(\d+)\s*:\s*([^<]*)</h2>', re.IGNORECASE)
-        matches = list(part_pattern.finditer(instructions_html))
+        heading_pattern = re.compile(
+            r'<h([1-6])\b[^>]*>(.*?)</h\1>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        part_heading_pattern = re.compile(
+            r'^\s*(part|step|task|question|exercise|problem|section)\s*(\d+)\b(?:\s*[:\-\.]\s*(.*))?$',
+            re.IGNORECASE | re.DOTALL,
+        )
+        matches = []
+        for match in heading_pattern.finditer(instructions_html):
+            heading_text = self.clean_html_block(match.group(2))
+            part_match = part_heading_pattern.match(heading_text)
+            if not part_match:
+                continue
+            matches.append((match, part_match))
+
         parts = []
 
-        for idx, match in enumerate(matches):
-            part_num = int(match.group(1))
-            title = html.unescape(match.group(2)).strip()
+        for idx, (match, part_match) in enumerate(matches):
+            part_num = int(part_match.group(2))
+            section_title = (part_match.group(3) or '').strip()
+            label = part_match.group(1).strip().title()
+            title = section_title or f'{label} {part_num}'
             start = match.end()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(instructions_html)
+            end = matches[idx + 1][0].start() if idx + 1 < len(matches) else len(instructions_html)
             raw_block = instructions_html[start:end]
             requirements = self.clean_html_block(raw_block)
 
-            is_optional = bool(
-                re.search(r'optional|stretch', title, re.IGNORECASE)
-                or re.search(r'\boptional\b|\bstretch\b', requirements, re.IGNORECASE)
-            )
+            parts.append(self._make_instruction_part(part_num, title, requirements))
 
-            parts.append({
-                'key': f'part{part_num}',
-                'part_num': str(part_num),
-                'title': title,
-                'requirements': requirements,
-                'is_optional': is_optional,
-            })
+        if parts:
+            return sorted(parts, key=lambda p: int(p['part_num']))
 
-        return sorted(parts, key=lambda p: int(p['part_num']))
+        full_instructions = self.clean_html_block(instructions_html)
+        if not full_instructions:
+            return []
+
+        fallback_title = 'Assignment Requirements'
+        title_match = re.search(r'<h[1-3]\b[^>]*>(.*?)</h[1-3]>', instructions_html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            candidate_title = self.clean_html_block(title_match.group(1))
+            if candidate_title:
+                fallback_title = candidate_title
+
+        return [self._make_instruction_part(1, fallback_title, full_instructions)]
 
     def extract_part_instruction_map(self, instructions_html: str) -> Dict[str, str]:
         """Extract part requirement text from assignment HTML for reporting."""
@@ -679,29 +859,12 @@ class AutoGrader:
             return True
         return False
 
-    _SCREENSHOT_EXTENSIONS = frozenset(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp'))
-
-    def _screenshot_note(self, directory: str) -> str:
-        """Return a note about screenshot files present in the submission directory, or '' if none."""
-        found = []
-        for root, dirs, files in os.walk(directory):
-            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
-            for file in files:
-                if Path(file).suffix.lower() in self._SCREENSHOT_EXTENSIONS:
-                    rel = os.path.relpath(os.path.join(root, file), directory)
-                    found.append(rel)
-        if not found:
-            return ""
-        file_list = "\n".join(f"  - {f}" for f in sorted(found))
-        return (
-            f"[SCREENSHOTS SUBMITTED: {len(found)} image file(s) were included in this submission — "
-            f"treat screenshot requirements as fulfilled]\n{file_list}"
-        )
-
-    def _append_screenshot_note(self, content: str, directory: str) -> str:
-        """Append screenshot presence note to submission content."""
-        note = self._screenshot_note(directory)
-        return f"{content}\n\n{note}" if note else content
+    def _append_submission_artifact_notes(self, content: str, directory: str) -> str:
+        """Append detected non-code deliverables to the submission content."""
+        notes = [note for note in [self._submission_tree_note(directory), self._submission_inventory_note(directory)] if note]
+        if not notes:
+            return content
+        return f"{content}\n\n" + "\n\n".join(notes)
 
     def _extract_csproj_compile_includes(self, csproj_files: List[str], root_dir: str) -> set:
         """Extract explicit Compile Include paths from .csproj files for relevance boost."""
@@ -941,7 +1104,7 @@ class AutoGrader:
             except Exception as e:
                 print(f"Error reading {file_path}: {e}")
         
-        return self._append_screenshot_note("\n\n".join(combined), directory)
+        return self._append_submission_artifact_notes("\n\n".join(combined), directory)
 
     def extract_csharp_parts(self, csharp_content: str) -> Dict[str, str]:
         """Extract different parts of the C# assignment dynamically"""
@@ -1106,6 +1269,8 @@ CRITICAL GRADING RULES
 4. Be fair and slightly generous when intent and behavior are clearly correct.
 5. Grade ONLY these required parts: {graded_keys_list}
 6. Do not deduct for optional/stretch parts that are not implemented.
+7. The submission may include non-code deliverables inside a submission inventory block, such as presentations, videos, screenshots, reports, or supporting documents.
+8. Before deducting for a missing presentation/video/report/screenshot deliverable, check whether it is listed in the submission inventory and accept equivalent common file formats when the instructions do not require one exact format.
 
 ════════════════════════════════════════════════════════
 RESPONSE FORMAT — return ONLY valid JSON, no extra text:
@@ -1859,7 +2024,70 @@ PART SCORES:
             }
             return names.get(language, language.title())
 
+        def extract_note_block(text: str, start_label: str, next_labels: List[str]) -> str:
+            source = str(text or "")
+            if not source.strip():
+                return ""
+
+            start_pattern = rf'(\[{re.escape(start_label)}:[\s\S]*?)'
+            terminator_pattern = "|".join(rf'\n\n\[{re.escape(label)}:' for label in next_labels)
+            if terminator_pattern:
+                pattern = start_pattern + rf'(?={terminator_pattern}|$)'
+            else:
+                pattern = start_pattern + r'$'
+
+            match = re.search(pattern, source)
+            return match.group(1).strip() if match else ""
+
+        def extract_submission_tree_block() -> str:
+            preserved = str(grading_result.get('_submission_tree', '') or '').strip()
+            if preserved:
+                return preserved
+            for part_key in sorted(grading_result.keys()):
+                part_data = grading_result.get(part_key)
+                if not (part_key.startswith('part') and isinstance(part_data, dict)):
+                    continue
+                original_code = str(part_data.get('original_code', '') or '')
+                block = extract_note_block(original_code, 'SUBMISSION TREE', ['SUBMISSION INVENTORY'])
+                if block:
+                    return block
+            return ""
+
+        def extract_submission_inventory_block() -> str:
+            preserved = str(grading_result.get('_submission_inventory', '') or '').strip()
+            if preserved:
+                return preserved
+            for part_key in sorted(grading_result.keys()):
+                part_data = grading_result.get(part_key)
+                if not (part_key.startswith('part') and isinstance(part_data, dict)):
+                    continue
+                original_code = str(part_data.get('original_code', '') or '')
+                block = extract_note_block(original_code, 'SUBMISSION INVENTORY', [])
+                if block:
+                    return block
+            return ""
+
         part_instruction_map = self.extract_part_instruction_map(instructions_html)
+        submission_tree = extract_submission_tree_block()
+        submission_inventory = extract_submission_inventory_block()
+        submission_tree_html = ""
+        if submission_tree:
+            submission_tree_html = f"""
+        <section class=\"part submission-inventory\">
+            <h3>Submission Tree</h3>
+            <p class=\"inventory-intro\">This is the compact folder/file tree included in the grading prompt for this submission.</p>
+            <pre class=\"inventory-text\">{esc(submission_tree)}</pre>
+        </section>
+        """
+        submission_inventory_html = ""
+        if submission_inventory:
+            submission_inventory_html = f"""
+        <section class=\"part submission-inventory\">
+            <h3>Submission Inventory</h3>
+            <p class=\"inventory-intro\">This is the non-code deliverable inventory included in the grading prompt for this submission.</p>
+            <pre class=\"inventory-text\">{esc(submission_inventory)}</pre>
+        </section>
+        """
 
         def _ann_terms(text: str) -> List[str]:
             """Extract meaningful searchable tokens from a single annotation string."""
@@ -2128,8 +2356,11 @@ PART SCORES:
         .issue-panel {{ background: #fef2f2; border-color: #fecaca; }}
         .strength-panel {{ background: #ecfdf5; border-color: #a7f3d0; }}
         .correction-panel {{ background: #f0fdf4; border-color: #bbf7d0; }}
+        .submission-inventory {{ background: #f8fafc; border-color: #cbd5e1; }}
         pre {{ background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }}
         .expected-text {{ background: #f8fafc; color: #111827; border: 1px solid #e5e7eb; }}
+        .inventory-text {{ background: #f8fafc; color: #111827; border: 1px solid #cbd5e1; margin: 0; }}
+        .inventory-intro {{ margin-top: 0; color: #475569; }}
         .language-chip {{ display: inline-block; margin: 4px 0 10px; padding: 4px 10px; border: 1px solid #bae6fd; background: #eff6ff; color: #1e3a8a; border-radius: 999px; font-size: 12px; font-weight: 700; }}
         .code-block {{ background: #0b1020; color: #e5e7eb; border-radius: 8px; padding: 12px; overflow-x: auto; }}
         .code-row {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 10px; align-items: start; }}
@@ -2226,6 +2457,9 @@ PART SCORES:
             <div><strong>Letter Grade:</strong> {esc(letter_grade)}</div>
             <div><strong>Brief Summary:</strong> {brief_summary}</div>
         </div>
+
+        {submission_tree_html}
+        {submission_inventory_html}
 
         <h2>Detailed Feedback</h2>
         {parts_html}
@@ -2368,6 +2602,24 @@ PART SCORES:
         
         # Grade with AI (either OpenAI or custom endpoint)
         grading_result = self.grade_with_ai(prompt)
+
+        def _extract_note_block(text: str, start_label: str, next_labels: List[str]) -> str:
+            source = str(text or "")
+            if not source.strip():
+                return ""
+
+            start_pattern = rf'(\[{re.escape(start_label)}:[\s\S]*?)'
+            terminator_pattern = "|".join(rf'\n\n\[{re.escape(label)}:' for label in next_labels)
+            if terminator_pattern:
+                pattern = start_pattern + rf'(?={terminator_pattern}|$)'
+            else:
+                pattern = start_pattern + r'$'
+
+            match = re.search(pattern, source)
+            return match.group(1).strip() if match else ""
+
+        grading_result['_submission_tree'] = _extract_note_block(submission_content, 'SUBMISSION TREE', ['SUBMISSION INVENTORY'])
+        grading_result['_submission_inventory'] = _extract_note_block(submission_content, 'SUBMISSION INVENTORY', [])
         
         # Calculate final score if not provided
         if 'final_score' not in grading_result and 'error' not in grading_result:
