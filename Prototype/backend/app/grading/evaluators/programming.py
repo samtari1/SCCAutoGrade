@@ -9,7 +9,7 @@ from ..contracts import BaseEvaluator, ConfidenceReport, GradingRequest, Grading
 class ProgrammingEvaluator(BaseEvaluator):
     supported_types = [QuestionType.CODE, QuestionType.COMPOSITE]
 
-    def __init__(self, key: str = "programming", language_hint: str = "csharp") -> None:
+    def __init__(self, key: str = "programming", language_hint: str = "mixed") -> None:
         self.key = key
         self.language_hint = language_hint
 

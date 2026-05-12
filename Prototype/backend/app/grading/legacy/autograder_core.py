@@ -125,6 +125,8 @@ class AutoGrader:
 
     def _normalized_language_hint(self) -> str:
         lang = (getattr(self, 'language_hint', 'csharp') or 'csharp').strip().lower()
+        if lang in {'any', 'multi', 'mixed', 'generic'}:
+            return 'mixed'
         if lang in {'cs', 'c#', 'csharp'}:
             return 'csharp'
         if lang in {'js', 'javascript', 'node'}:
@@ -142,6 +144,7 @@ class AutoGrader:
             'python': ('.py',),
             'javascript': ('.js', '.jsx', '.ts', '.tsx'),
             'sql': ('.sql',),
+            'mixed': ('.cs', '.py', '.js', '.jsx', '.ts', '.tsx', '.sql', '.java', '.cpp', '.c', '.cc', '.h', '.hpp'),
         }
         return mapping.get(lang, ('.cs',))
 
@@ -151,6 +154,7 @@ class AutoGrader:
             'python': 'Python',
             'javascript': 'JavaScript',
             'sql': 'SQL',
+            'mixed': 'mixed-language',
         }
         return names.get(self._normalized_language_hint(), self._normalized_language_hint().upper())
 

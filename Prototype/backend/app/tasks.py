@@ -46,7 +46,7 @@ def run_grading_job(
     evaluator_key: str = "programming",
     route_type: str = "code",
     routing_reason: str = "",
-    code_specialty: str = "csharp",
+    code_specialty: str = "mixed",
     multi_agent_grading: bool = True,
     multi_agent_disagreement_threshold: float = 5.0,
     multi_agent_part_disagreement_threshold: float = 10.0,

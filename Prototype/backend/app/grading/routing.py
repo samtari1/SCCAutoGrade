@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Dict, Tuple
 
 
 def detect_route_type(instructions_text: str) -> Tuple[str, str]:
@@ -76,26 +76,41 @@ def detect_code_specialty(instructions_text: str) -> Tuple[str, str]:
     """Infer a likely code language specialty for code-route assignments."""
     text = (instructions_text or "").lower()
 
-    if re.search(r"\bc#\b|\bwinforms\b|\bwindows forms\b|\.cs\b", text):
-        return "csharp", "Detected C#/WinForms indicators"
-    if re.search(r"\bpython\b|\.py\b|\bpandas\b|\bnumpy\b", text):
-        return "python", "Detected Python indicators"
-    if re.search(r"\bjavascript\b|\bnode\b|\.js\b|\breact\b", text):
-        return "javascript", "Detected JavaScript indicators"
+    signals: Dict[str, tuple[str, str]] = {
+        "csharp": (
+            r"\bc#\b|\bwinforms\b|\bwindows forms\b|\.cs\b",
+            "Detected C#/WinForms indicators",
+        ),
+        "python": (
+            r"\bpython\b|\.py\b|\bpandas\b|\bnumpy\b",
+            "Detected Python indicators",
+        ),
+        "javascript": (
+            r"\bjavascript\b|\bnode\b|\.js\b|\breact\b",
+            "Detected JavaScript indicators",
+        ),
+        "sql": (
+            r"\bsql\b|\bquery\b|\bjoin\b|\bgroup\s+by\b|\border\s+by\b|\bcreate\s+table\b|\binsert\s+into\b|\bupdate\s+\w+\s+set\b|\bdelete\s+from\b|\bselect\b\s+.+\s+\bfrom\b",
+            "Detected SQL indicators",
+        ),
+    }
 
-    # Keep SQL detection specific enough to avoid false positives from generic
-    # words like "select" in non-SQL instructions.
-    if re.search(
-        r"\bsql\b|\bquery\b|\bjoin\b|\bgroup\s+by\b|\border\s+by\b|\bcreate\s+table\b|\binsert\s+into\b|\bupdate\s+\w+\s+set\b|\bdelete\s+from\b|\bselect\b\s+.+\s+\bfrom\b",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        return "sql", "Detected SQL indicators"
+    matches = [
+        (language, reason)
+        for language, (pattern, reason) in signals.items()
+        if re.search(pattern, text, flags=re.IGNORECASE)
+    ]
 
-    return "csharp", "No strong language indicator; defaulting to C# profile"
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        languages = ", ".join(language for language, _ in matches)
+        return "mixed", f"Detected multiple language indicators ({languages})"
+
+    return "mixed", "No strong language indicator; defaulting to mixed-language profile"
 
 
-def map_route_to_evaluator(route_type: str, code_specialty: str = "csharp") -> str:
+def map_route_to_evaluator(route_type: str, code_specialty: str = "mixed") -> str:
     # Non-code routes currently fall back to programming while specialized evaluators are added incrementally.
     if route_type == "code":
         specialty_map = {
@@ -103,6 +118,7 @@ def map_route_to_evaluator(route_type: str, code_specialty: str = "csharp") -> s
             "python": "code-python",
             "javascript": "code-javascript",
             "sql": "code-sql",
+            "mixed": "programming",
         }
         return specialty_map.get(code_specialty, "programming")
     return "programming"

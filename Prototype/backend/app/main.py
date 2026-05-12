@@ -384,7 +384,7 @@ async def create_job(
     instructions_text = instructions_path.read_text(encoding="utf-8", errors="ignore")
     assignment_name = _derive_assignment_name_from_html(instructions_text)
     route_type, routing_reason = detect_route_type(instructions_text)
-    code_specialty = "csharp"
+    code_specialty = "mixed"
     if route_type == "code":
         code_specialty, specialty_reason = detect_code_specialty(instructions_text)
         routing_reason = f"{routing_reason}; specialty={code_specialty} ({specialty_reason})"
@@ -733,7 +733,7 @@ def resume_job(job_id: str, request: Request) -> dict:
     evaluator_key = "programming"
     route_type = "code"
     routing_reason = "Resuming interrupted job"
-    code_specialty = "csharp"
+    code_specialty = "mixed"
     
     if stream_log.exists():
         first_line = stream_log.read_text(encoding="utf-8", errors="ignore").splitlines()[:1]
