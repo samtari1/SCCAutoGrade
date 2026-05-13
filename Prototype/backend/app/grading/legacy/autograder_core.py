@@ -5,6 +5,7 @@ AutoGrade.py - Automated Assignment Grading System
 
 import os
 import sys
+import subprocess
 import zipfile
 import tempfile
 import shutil
@@ -18,6 +19,9 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
+
+
+_EXTRACT_COMPLETE_MARKER = ".extract_complete"
 
 # Load environment variables from explicit .env locations.
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -188,6 +192,149 @@ class AutoGrader:
         except Exception:
             return ""
 
+    def _ocr_image_file(self, file_path: str, max_chars: int = 4000) -> str:
+        """Extract OCR text from an image file using the local tesseract binary when available."""
+        try:
+            tesseract_path = shutil.which('tesseract')
+            if not tesseract_path:
+                return ""
+
+            result = subprocess.run(
+                [tesseract_path, file_path, 'stdout', '--psm', '6'],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if result.returncode != 0:
+                return ""
+
+            text = (result.stdout or '').strip()
+            if not text:
+                return ""
+
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            cleaned = '\n'.join(lines)
+            return cleaned[:max_chars]
+        except Exception:
+            return ""
+
+    def _extract_pptx_text(self, file_path: str) -> str:
+        """Extract readable text from a .pptx file using stdlib zip/xml parsing."""
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                slide_names = sorted(
+                    name for name in zf.namelist()
+                    if name.startswith('ppt/slides/slide') and name.endswith('.xml')
+                )
+
+                slide_blocks = []
+                for index, slide_name in enumerate(slide_names, start=1):
+                    xml = zf.read(slide_name).decode('utf-8', errors='ignore')
+                    texts = re.findall(r'<a:t[^>]*>(.*?)</a:t>', xml, flags=re.DOTALL)
+                    cleaned = [html.unescape(text).strip() for text in texts if html.unescape(text).strip()]
+                    if cleaned:
+                        slide_blocks.append(f"Slide {index}:\n" + '\n'.join(cleaned))
+
+                media_names = sorted(
+                    name for name in zf.namelist()
+                    if name.startswith('ppt/media/') and Path(name).suffix.lower() in self._SCREENSHOT_EXTENSIONS
+                )
+                for media_name in media_names:
+                    suffix = Path(media_name).suffix.lower()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_image:
+                        temp_image.write(zf.read(media_name))
+                        temp_image_path = temp_image.name
+                    try:
+                        ocr_text = self._ocr_image_file(temp_image_path)
+                    finally:
+                        try:
+                            os.unlink(temp_image_path)
+                        except OSError:
+                            pass
+                    if ocr_text:
+                        slide_blocks.append(f"Image OCR {Path(media_name).name}:\n{ocr_text}")
+
+            return '\n\n'.join(slide_blocks)
+        except Exception:
+            return ""
+
+    def _extract_pdf_text(self, file_path: str) -> str:
+        """Extract readable text from a PDF file when pypdf is available."""
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(file_path)
+            pages = []
+            for index, page in enumerate(reader.pages, start=1):
+                try:
+                    text = (page.extract_text() or '').strip()
+                except Exception:
+                    text = ''
+                if text:
+                    pages.append(f"Page {index}:\n{text}")
+            return '\n\n'.join(pages)
+        except Exception:
+            return ""
+
+    def _read_supporting_document_text(self, file_path: str) -> str:
+        ext = Path(file_path).suffix.lower()
+
+        try:
+            if ext in self._SCREENSHOT_EXTENSIONS:
+                return self._ocr_image_file(file_path).strip()
+            if ext in {'.txt', '.md', '.html', '.htm', '.csv', '.tsv', '.json', '.xml', '.yml', '.yaml'}:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    return f.read().strip()
+            if ext == '.docx':
+                return self._extract_docx_text(file_path).strip()
+            if ext == '.pptx':
+                return self._extract_pptx_text(file_path).strip()
+            if ext == '.pdf':
+                return self._extract_pdf_text(file_path).strip()
+        except Exception:
+            return ""
+
+        return ""
+
+    def _collect_supporting_documents(self, directory: str, max_chars: int = 24000) -> str:
+        """Collect readable supporting-document text for grading context, even when code files exist."""
+        readable_exts = {
+            '.txt', '.md', '.docx', '.pdf', '.pptx', '.html', '.htm',
+            '.csv', '.tsv', '.json', '.xml', '.yml', '.yaml',
+            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp'
+        }
+        marker = self._file_marker_prefix()
+        blocks = []
+        consumed = 0
+
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+            for file in sorted(files):
+                ext = Path(file).suffix.lower()
+                if ext not in readable_exts:
+                    continue
+
+                file_path = os.path.join(root, file)
+                rel = os.path.relpath(file_path, directory)
+                text = self._read_supporting_document_text(file_path)
+                if not text:
+                    continue
+
+                remaining = max_chars - consumed
+                if remaining <= 0:
+                    blocks.append(f"{marker} [supporting documents truncated after {max_chars} characters]")
+                    return '\n\n'.join(blocks)
+
+                text = text[:remaining].strip()
+                if not text:
+                    continue
+
+                blocks.append(f"{marker} {rel}\n{text}")
+                consumed += len(text)
+
+        return '\n\n'.join(blocks)
+
     def _collect_report_documents(self, directory: str) -> str:
         """Collect weekly report style artifacts when code files are not present."""
         report_exts = {'.txt', '.md', '.docx', '.pdf', '.pptx', '.html', '.htm'}
@@ -205,16 +352,9 @@ class AutoGrader:
                 rel = os.path.relpath(file_path, directory)
                 text = ""
 
-                try:
-                    if ext in {'.txt', '.md', '.html', '.htm'}:
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            text = f.read().strip()
-                    elif ext == '.docx':
-                        text = self._extract_docx_text(file_path).strip()
-                    elif ext in {'.pdf', '.pptx'}:
-                        text = f"[{ext[1:].upper()} file attached: {rel}]"
-                except Exception:
-                    text = ""
+                text = self._read_supporting_document_text(file_path)
+                if not text and ext in {'.pdf', '.pptx'}:
+                    text = f"[{ext[1:].upper()} file attached: {rel}]"
 
                 if text:
                     blocks.append(f"{marker} {rel}\n{text}")
@@ -653,13 +793,42 @@ class AutoGrader:
         # ── Step 1: Extract the main zip into a named folder (skip if already done) ──
         zip_path_obj = Path(main_zip_path)
         extract_dir = zip_path_obj.parent / zip_path_obj.stem
-        if extract_dir.exists():
+        extract_marker = extract_dir / _EXTRACT_COMPLETE_MARKER
+        if extract_dir.exists() and not extract_marker.exists():
+            print(f"⚠️  Removing incomplete submissions folder before re-extracting: {extract_dir}")
+            if extract_dir.is_dir():
+                shutil.rmtree(extract_dir)
+            else:
+                extract_dir.unlink()
+
+        if extract_marker.exists():
             print(f"📂 Submissions folder already exists, reusing: {extract_dir}")
         else:
             print(f"📦 Extracting main zip to: {extract_dir}")
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(main_zip_path, 'r') as main_zip:
-                main_zip.extractall(str(extract_dir))
+            temp_extract_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{zip_path_obj.stem}-extract-",
+                    dir=str(zip_path_obj.parent),
+                )
+            )
+            try:
+                with zipfile.ZipFile(main_zip_path, 'r') as main_zip:
+                    main_zip.extractall(str(temp_extract_dir))
+                (temp_extract_dir / _EXTRACT_COMPLETE_MARKER).write_text("ok\n", encoding="utf-8")
+                try:
+                    temp_extract_dir.replace(extract_dir)
+                except FileExistsError:
+                    print(f"📂 Another worker finished extraction first, reusing: {extract_dir}")
+                    shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                except OSError:
+                    if extract_marker.exists():
+                        print(f"📂 Reusing concurrently prepared submissions folder: {extract_dir}")
+                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                    else:
+                        raise
+            except Exception:
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                raise
             print(f"✅ Extracted to: {extract_dir}")
 
         # ── Step 2: Iterate student-level entries (handles optional wrapper folder) ──
@@ -861,7 +1030,14 @@ class AutoGrader:
 
     def _append_submission_artifact_notes(self, content: str, directory: str) -> str:
         """Append detected non-code deliverables to the submission content."""
-        notes = [note for note in [self._submission_tree_note(directory), self._submission_inventory_note(directory)] if note]
+        notes = [
+            note for note in [
+                self._submission_tree_note(directory),
+                self._submission_inventory_note(directory),
+                self._collect_supporting_documents(directory),
+            ]
+            if note
+        ]
         if not notes:
             return content
         return f"{content}\n\n" + "\n\n".join(notes)

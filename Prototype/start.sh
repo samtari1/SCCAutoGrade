@@ -16,6 +16,10 @@ WORKER_QUEUES=(
 )
 PIDS=()
 
+docker_socket_available() {
+  [[ -S /var/run/docker.sock || -S "$HOME/.docker/run/docker.sock" ]]
+}
+
 stop_stale_processes() {
   echo "[start] Cleaning up stale project processes..."
 
@@ -59,10 +63,26 @@ if [[ "$EXPLICIT_INMEMORY_MODE" =~ ^(1|true|yes|on)$ ]]; then
   echo "[start] USE_INMEMORY_QUEUE requested explicitly. Starting in-memory mode."
   INMEMORY_MODE="1"
   REDIS_MODE="none"
-elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+elif command -v docker >/dev/null 2>&1 && docker_socket_available; then
   echo "[start] Starting Redis via docker compose..."
-  docker compose up -d redis >/dev/null
-  REDIS_MODE="docker"
+  if docker compose up -d redis >/dev/null 2>&1; then
+    REDIS_MODE="docker"
+  elif command -v redis-cli >/dev/null 2>&1 && redis-cli -p 6379 ping >/dev/null 2>&1; then
+    echo "[start] Docker is present but unavailable. Reusing Redis already running on port 6379."
+    REDIS_MODE="external"
+  elif command -v redis-server >/dev/null 2>&1; then
+    echo "[start] Docker is present but unavailable. Starting local redis-server on port 6379 instead..."
+    (
+      redis-server --port 6379
+    ) >"$LOG_DIR/redis.log" 2>&1 &
+    PIDS+=("$!")
+    REDIS_MODE="local"
+  else
+    echo "[start] Docker is present but unavailable, and no Redis fallback is installed."
+    echo "[start] Start Docker Desktop, run a local redis-server, or explicitly opt into in-memory mode with:"
+    echo "[start]   USE_INMEMORY_QUEUE=1 ./start.sh"
+    exit 1
+  fi
 elif command -v redis-cli >/dev/null 2>&1 && redis-cli -p 6379 ping >/dev/null 2>&1; then
   echo "[start] Redis already running on port 6379, reusing it."
   REDIS_MODE="external"
