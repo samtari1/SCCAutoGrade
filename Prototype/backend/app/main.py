@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from urllib.parse import parse_qs, urlparse
 from typing import Dict, List, Optional
 
 import os
@@ -153,6 +154,122 @@ def _queue_name_for_lane(lane: str) -> str:
     return candidate if candidate in PARALLEL_QUEUE_NAMES else DEFAULT_QUEUE_NAME
 
 
+def _upgrade_submission_image_markup(html_text: str) -> str:
+    """Backfill newer image modal UX for legacy generated reports.
+
+    - Close/backdrop returns to the clicked image card anchor instead of top of page.
+    - Adds previous/next arrow navigation inside enlarged image modals.
+    """
+    if "submission-image-modal" not in html_text:
+        return html_text
+
+    # Ensure image section has a stable anchor target.
+    html_text = html_text.replace(
+        '<section class="part submission-images">',
+        '<section id="submission-images" class="part submission-images">',
+        1,
+    )
+
+    # Add deterministic ids to image cards when missing.
+    card_counter = {"value": 0}
+
+    def _card_repl(match):
+        card_counter["value"] += 1
+        return f'<figure id="submission-image-card-{card_counter["value"]}" class="submission-image-card">'
+
+    html_text = _re.sub(
+        r'<figure class="submission-image-card">',
+        _card_repl,
+        html_text,
+    )
+
+    modal_ids = [int(x) for x in _re.findall(r'<aside id="submission-image-modal-(\d+)"', html_text)]
+    if not modal_ids:
+        return html_text
+
+    # Add CSS for arrow controls once.
+    if "submission-image-stage" not in html_text:
+        compat_css = """
+.submission-image-stage {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+}
+.submission-image-nav {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  text-decoration: none;
+  font-size: 24px;
+  line-height: 1;
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #e2e8f0;
+  user-select: none;
+}
+.submission-image-nav:hover { background: #334155; }
+@media (max-width: 900px) {
+  .submission-image-stage { grid-template-columns: 36px minmax(0, 1fr) 36px; gap: 6px; }
+  .submission-image-nav { width: 34px; height: 34px; font-size: 20px; }
+}
+"""
+        html_text = html_text.replace("</style>", f"{compat_css}\n</style>", 1)
+
+    for pos, modal_num in enumerate(modal_ids):
+        prev_num = modal_ids[pos - 1]
+        next_num = modal_ids[(pos + 1) % len(modal_ids)]
+        card_anchor = f"#submission-image-card-{modal_num}"
+
+        # Keep user near the same image when closing.
+        html_text = html_text.replace(
+            f'<aside id="submission-image-modal-{modal_num}" class="submission-image-modal" aria-label="Expanded submission image">\n                    <a href="#" class="submission-image-modal-backdrop" aria-label="Close image"></a>',
+            f'<aside id="submission-image-modal-{modal_num}" class="submission-image-modal" aria-label="Expanded submission image">\n                    <a href="{card_anchor}" class="submission-image-modal-backdrop" aria-label="Close image"></a>',
+            1,
+        )
+        html_text = html_text.replace(
+            '<a href="#" class="submission-image-modal-close" aria-label="Close image">Close</a>',
+            f'<a href="{card_anchor}" class="submission-image-modal-close" aria-label="Close image">Close</a>',
+            1,
+        )
+
+        # Inject arrow navigation if modal content still uses legacy single-img layout.
+        modal_pattern = _re.compile(
+            rf'(<aside id="submission-image-modal-{modal_num}"[\s\S]*?<div class="submission-image-modal-content">)([\s\S]*?)(</div>\s*</aside>)'
+        )
+        modal_match = modal_pattern.search(html_text)
+        if not modal_match:
+            continue
+
+        modal_inner = modal_match.group(2)
+        if 'submission-image-stage' in modal_inner:
+            continue
+
+        img_match = _re.search(r'(<img\s+[^>]+/>)', modal_inner)
+        if not img_match:
+            continue
+
+        stage_html = (
+            f'<div class="submission-image-stage">'
+            f'<a href="#submission-image-modal-{prev_num}" class="submission-image-nav submission-image-nav-left" aria-label="Previous image">&#10094;</a>'
+            f'{img_match.group(1)}'
+            f'<a href="#submission-image-modal-{next_num}" class="submission-image-nav submission-image-nav-right" aria-label="Next image">&#10095;</a>'
+            f'</div>'
+        )
+        modal_inner = modal_inner.replace(img_match.group(1), stage_html, 1)
+        html_text = (
+            html_text[: modal_match.start(2)]
+            + modal_inner
+            + html_text[modal_match.end(2) :]
+        )
+
+    return html_text
+
+
 def _fetch_rq_job(job_id: str) -> Optional[Job]:
     try:
         return Job.fetch(job_id, connection=get_redis())
@@ -167,6 +284,16 @@ def _extract_bearer_token(request: Request) -> str:
         token = auth_header[7:].strip()
     if not token:
         token = str(request.query_params.get("token") or "").strip()
+    if not token:
+        # Artifact subresource requests (images/css) often omit Authorization and query params.
+        # For same-origin requests from a tokenized report URL, recover token from Referer.
+        referer = request.headers.get("referer", "").strip()
+        if referer:
+            try:
+                referer_query = parse_qs(urlparse(referer).query)
+                token = str((referer_query.get("token") or [""])[0]).strip()
+            except Exception:
+                token = ""
     if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
     return token
@@ -1286,6 +1413,7 @@ def download_artifact(job_id: str, filename: str, request: Request):
             else:
                 html_text += chatbot_snippet
 
+        html_text = _upgrade_submission_image_markup(html_text)
         return HTMLResponse(content=html_text)
 
     return FileResponse(str(artifact_path), media_type=media_type or "application/octet-stream")
@@ -1552,6 +1680,7 @@ def download_artifact(job_id: str, filename: str, request: Request):
             html_text = html_text.replace("</body>", f"{scroll_top_snippet}\n</body>")
         else:
             html_text += scroll_top_snippet
+    html_text = _upgrade_submission_image_markup(html_text)
     return HTMLResponse(
         content=html_text,
         headers={"Content-Disposition": f'inline; filename="{resolved_file.name}"'},

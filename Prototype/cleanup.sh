@@ -82,6 +82,9 @@ stop_local_redis() {
 
 note "Cleaning up leftover AutoGrade dev processes..."
 
+stop_matching_process "backend API (module pattern)" "uvicorn backend.app.main:app"
+stop_matching_process "RQ worker (module pattern)" "backend.worker"
+
 stop_matching_process "backend API" "$ROOT_DIR/.venv/bin/python -m uvicorn backend.app.main:app"
 stop_matching_process "RQ worker" "$ROOT_DIR/.venv/bin/python -m backend.worker"
 stop_matching_process "frontend dev server" "$ROOT_DIR/frontend/node_modules/.bin/vite --host 0.0.0.0 --port 5173"

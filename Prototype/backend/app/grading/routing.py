@@ -81,6 +81,10 @@ def detect_code_specialty(instructions_text: str) -> Tuple[str, str]:
             r"\bc#\b|\bwinforms\b|\bwindows forms\b|\.cs\b",
             "Detected C#/WinForms indicators",
         ),
+        "swift": (
+            r"\bswift\b|\bxcode\b|\.swift\b|\.playground\b|\bplayground\b|\bxcworkspace\b",
+            "Detected Swift/Xcode indicators",
+        ),
         "python": (
             r"\bpython\b|\.py\b|\bpandas\b|\bnumpy\b",
             "Detected Python indicators",
@@ -115,6 +119,7 @@ def map_route_to_evaluator(route_type: str, code_specialty: str = "mixed") -> st
     if route_type == "code":
         specialty_map = {
             "csharp": "code-csharp",
+            "swift": "programming",
             "python": "code-python",
             "javascript": "code-javascript",
             "sql": "code-sql",

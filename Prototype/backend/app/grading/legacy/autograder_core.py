@@ -9,6 +9,7 @@ import subprocess
 import zipfile
 import tempfile
 import shutil
+import errno
 from pathlib import Path
 import openai
 from typing import List, Dict, Optional, Tuple
@@ -61,6 +62,8 @@ class AutoGrader:
         self.openai_stream = os.getenv('OPENAI_STREAM', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
         self.language_hint = os.getenv('CODE_SPECIALTY', 'csharp').strip().lower()
         self.grading_context = ""
+        self.student_image_artifacts: Dict[str, List[Dict[str, str]]] = {}
+        self.current_job_id: Optional[str] = None
         
         if not self.use_custom_endpoint:
             # OpenAI setup
@@ -137,6 +140,8 @@ class AutoGrader:
             return 'javascript'
         if lang in {'py', 'python'}:
             return 'python'
+        if lang in {'swift'}:
+            return 'swift'
         if lang in {'sql'}:
             return 'sql'
         return lang
@@ -145,16 +150,18 @@ class AutoGrader:
         lang = self._normalized_language_hint()
         mapping = {
             'csharp': ('.cs',),
+            'swift': ('.swift',),
             'python': ('.py',),
             'javascript': ('.js', '.jsx', '.ts', '.tsx'),
             'sql': ('.sql',),
-            'mixed': ('.cs', '.py', '.js', '.jsx', '.ts', '.tsx', '.sql', '.java', '.cpp', '.c', '.cc', '.h', '.hpp'),
+            'mixed': ('.cs', '.py', '.js', '.jsx', '.ts', '.tsx', '.sql', '.java', '.cpp', '.c', '.cc', '.h', '.hpp', '.swift'),
         }
         return mapping.get(lang, ('.cs',))
 
     def _language_display_name(self) -> str:
         names = {
             'csharp': 'C#',
+            'swift': 'Swift',
             'python': 'Python',
             'javascript': 'JavaScript',
             'sql': 'SQL',
@@ -507,6 +514,87 @@ class AutoGrader:
             lines.append(f"... tree truncated after {max_entries} entries")
         return '\n'.join(lines)
 
+    def _collect_submission_images(self, directory: str, max_images: int = 40) -> List[Dict[str, str]]:
+        """Collect image files from a submission directory for optional report preview."""
+        image_entries: List[Dict[str, str]] = []
+        root_path = Path(directory)
+        if not root_path.exists():
+            return image_entries
+
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
+            for file in sorted(files):
+                ext = Path(file).suffix.lower()
+                if ext not in self._SCREENSHOT_EXTENSIONS:
+                    continue
+
+                abs_path = Path(root) / file
+                rel_path = os.path.relpath(str(abs_path), directory).replace('\\', '/')
+                image_entries.append(
+                    {
+                        'name': file,
+                        'relative_path': rel_path,
+                        'absolute_path': str(abs_path),
+                    }
+                )
+                if len(image_entries) >= max_images:
+                    return image_entries
+
+        return image_entries
+
+    def _prepare_report_image_assets(
+        self,
+        student_name: str,
+        image_entries: List[Dict[str, str]],
+        output_dir: str,
+        max_images: int = 24,
+        max_file_bytes: int = 8 * 1024 * 1024,
+    ) -> List[Dict[str, str]]:
+        """Copy submission images into report assets and return relative paths for HTML embedding."""
+        if not image_entries:
+            return []
+
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', student_name)
+        asset_root = Path(output_dir)
+        asset_root.mkdir(parents=True, exist_ok=True)
+
+        report_images: List[Dict[str, str]] = []
+        used_names = set()
+
+        for index, item in enumerate(image_entries[:max_images], start=1):
+            source = Path(str(item.get('absolute_path', '') or ''))
+            if not source.exists() or not source.is_file():
+                continue
+
+            try:
+                if source.stat().st_size > max_file_bytes:
+                    continue
+            except OSError:
+                continue
+
+            clean_base = re.sub(r'[^A-Za-z0-9._-]+', '_', source.name)
+            if not clean_base:
+                clean_base = f"image_{index}{source.suffix.lower()}"
+            dest_name = f"{index:02d}_{clean_base}"
+            while dest_name in used_names:
+                dest_name = f"{index:02d}_{len(used_names)}_{clean_base}"
+            used_names.add(dest_name)
+
+            destination = asset_root / f"report_image_{safe_name}_{dest_name}"
+            try:
+                shutil.copy2(source, destination)
+            except Exception:
+                continue
+
+            report_images.append(
+                {
+                    'title': str(item.get('relative_path') or source.name),
+                    'src': destination.name,
+                }
+            )
+
+        return report_images
+
     def _extract_submission_from_nested_structure(self, zip_path: str) -> str:
         temp_dir = tempfile.mkdtemp()
         try:
@@ -789,6 +877,7 @@ class AutoGrader:
         """Extract all student assignments from the main zip file and nested zips"""
         assignments = {}
         processed_students = set()
+        self.student_image_artifacts = {}
 
         # ── Step 1: Extract the main zip into a named folder (skip if already done) ──
         zip_path_obj = Path(main_zip_path)
@@ -820,8 +909,17 @@ class AutoGrader:
                 except FileExistsError:
                     print(f"📂 Another worker finished extraction first, reusing: {extract_dir}")
                     shutil.rmtree(temp_extract_dir, ignore_errors=True)
-                except OSError:
-                    if extract_marker.exists():
+                except OSError as exc:
+                    if exc.errno in {errno.ENOTEMPTY, errno.EEXIST} and extract_dir.exists():
+                        # macOS can report ENOTEMPTY during concurrent/near-concurrent directory replaces.
+                        print(f"📂 Existing submissions folder detected during replace, reusing: {extract_dir}")
+                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                        if not extract_marker.exists():
+                            try:
+                                extract_marker.write_text("ok\n", encoding="utf-8")
+                            except OSError:
+                                pass
+                    elif extract_marker.exists():
                         print(f"📂 Reusing concurrently prepared submissions folder: {extract_dir}")
                         shutil.rmtree(temp_extract_dir, ignore_errors=True)
                     else:
@@ -847,7 +945,8 @@ class AutoGrader:
             if student_entry.is_dir():
                 # Student folder: extract any archives inside it in-place, then find source files
                 self.ensure_archives_extracted(student_entry)
-                submission_content = self.find_submission_in_directory(str(student_entry))
+                submission_root = str(student_entry)
+                submission_content = self.find_submission_in_directory(submission_root)
 
             elif student_entry.suffix.lower() == '.zip':
                 # Bare zip at top level — extract in-place next to the zip
@@ -863,7 +962,8 @@ class AutoGrader:
                         inner_dir.rmdir()
                         continue
                 self.ensure_archives_extracted(inner_dir)
-                submission_content = self.find_submission_in_directory(str(inner_dir))
+                submission_root = str(inner_dir)
+                submission_content = self.find_submission_in_directory(submission_root)
 
             elif student_entry.suffix.lower() == '.7z':
                 inner_dir = student_entry.parent / student_entry.stem
@@ -881,13 +981,15 @@ class AutoGrader:
                         print(f"  ⚠️  Failed to extract {student_entry.name}: {e}")
                         continue
                 self.ensure_archives_extracted(inner_dir)
-                submission_content = self.find_submission_in_directory(str(inner_dir))
+                submission_root = str(inner_dir)
+                submission_content = self.find_submission_in_directory(submission_root)
 
             else:
                 continue  # Not a folder or archive — skip
 
             if submission_content and student_name:
                 assignments[student_name] = submission_content
+                self.student_image_artifacts[student_name] = self._collect_submission_images(submission_root)
                 processed_students.add(normalized_name)
                 print(f"  ✓ Found {self._language_display_name()} submission for: {student_name}")
             else:
@@ -2082,7 +2184,14 @@ PART SCORES:
         
         return report
 
-    def generate_grade_report_html(self, student_name: str, grading_result: Dict, assignment_name: str = "C# Assignment", instructions_html: str = "") -> str:
+    def generate_grade_report_html(
+        self,
+        student_name: str,
+        grading_result: Dict,
+        assignment_name: str = "C# Assignment",
+        instructions_html: str = "",
+        report_images: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
         """Generate a formatted HTML grade report for easier reading"""
         final_score = grading_result.get('final_score', 0)
 
@@ -2262,6 +2371,75 @@ PART SCORES:
             <h3>Submission Inventory</h3>
             <p class=\"inventory-intro\">This is the non-code deliverable inventory included in the grading prompt for this submission.</p>
             <pre class=\"inventory-text\">{esc(submission_inventory)}</pre>
+        </section>
+        """
+
+        image_gallery_html = ""
+        report_images = report_images or []
+        if report_images:
+            valid_images = []
+            for index, image in enumerate(report_images, start=1):
+                title = esc(image.get('title', f'Image {index}'))
+                src = esc(image.get('src', ''))
+                if not src:
+                    continue
+                valid_images.append({
+                    'index': index,
+                    'title': title,
+                    'src': src,
+                })
+
+            image_cards_html = ""
+            image_modals_html = ""
+            for position, image_data in enumerate(valid_images):
+                index = int(image_data['index'])
+                title = str(image_data['title'])
+                src = str(image_data['src'])
+                card_id = f"submission-image-card-{index}"
+                modal_id = f"submission-image-modal-{index}"
+
+                prev_image = valid_images[(position - 1) % len(valid_images)]
+                next_image = valid_images[(position + 1) % len(valid_images)]
+                prev_modal_id = f"submission-image-modal-{int(prev_image['index'])}"
+                next_modal_id = f"submission-image-modal-{int(next_image['index'])}"
+
+                image_cards_html += f"""
+                <figure id=\"{card_id}\" class=\"submission-image-card\">
+                    <a class=\"submission-image-link\" href=\"#{modal_id}\" title=\"Open larger image\">
+                        <img src=\"{src}\" alt=\"{title}\" loading=\"lazy\" />
+                    </a>
+                    <figcaption>{title}</figcaption>
+                </figure>
+                """
+                image_modals_html += f"""
+                <aside id=\"{modal_id}\" class=\"submission-image-modal\" aria-label=\"Expanded submission image\">
+                    <a href=\"#{card_id}\" class=\"submission-image-modal-backdrop\" aria-label=\"Close image\"></a>
+                    <div class=\"submission-image-modal-content\">
+                        <div class=\"submission-image-modal-header\">
+                            <a href=\"#{card_id}\" class=\"submission-image-modal-close\" aria-label=\"Close image\">Close</a>
+                        </div>
+                        <div class=\"submission-image-stage\">
+                            <a href=\"#{prev_modal_id}\" class=\"submission-image-nav submission-image-nav-left\" aria-label=\"Previous image\">&#10094;</a>
+                            <img src=\"{src}\" alt=\"{title}\" loading=\"eager\" />
+                            <a href=\"#{next_modal_id}\" class=\"submission-image-nav submission-image-nav-right\" aria-label=\"Next image\">&#10095;</a>
+                        </div>
+                        <p>{title}</p>
+                    </div>
+                </aside>
+                """
+
+            if image_cards_html:
+                image_gallery_html = f"""
+        <section class=\"part submission-images\">
+            <h3>Submission Images</h3>
+            <details class=\"submission-images-details\">
+                <summary>Show Images ({len(valid_images)})</summary>
+                <p class=\"inventory-intro\">Images found in the submitted files. Click any image to open a larger view.</p>
+                <div class=\"submission-images-grid\">
+                    {image_cards_html}
+                </div>
+            </details>
+            {image_modals_html}
         </section>
         """
 
@@ -2533,6 +2711,61 @@ PART SCORES:
         .strength-panel {{ background: #ecfdf5; border-color: #a7f3d0; }}
         .correction-panel {{ background: #f0fdf4; border-color: #bbf7d0; }}
         .submission-inventory {{ background: #f8fafc; border-color: #cbd5e1; }}
+        .submission-images {{ background: #f8fafc; border-color: #93c5fd; }}
+        .submission-images-details > summary {{ cursor: pointer; font-weight: 700; color: #1e3a8a; margin-bottom: 8px; }}
+        .submission-images-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }}
+        .submission-image-card {{ margin: 0; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; background: #ffffff; }}
+        .submission-image-link {{ display: block; }}
+        .submission-image-link:hover {{ opacity: 0.92; }}
+        .submission-image-card img {{ display: block; width: 100%; height: 180px; object-fit: contain; background: #0f172a; }}
+        .submission-image-card figcaption {{ padding: 8px; font-size: 12px; color: #334155; word-break: break-word; }}
+        .submission-image-modal {{ position: fixed; inset: 0; z-index: 1200; display: none; }}
+        .submission-image-modal:target {{ display: block; }}
+        .submission-image-modal-backdrop {{ position: absolute; inset: 0; background: rgba(2, 6, 23, 0.82); }}
+        .submission-image-modal-content {{
+            position: absolute;
+            inset: 5vh 5vw;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+        .submission-image-modal-header {{ display: flex; justify-content: flex-end; align-items: center; }}
+        .submission-image-stage {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 10px; flex: 1 1 auto; min-height: 0; }}
+        .submission-image-modal-content img {{ width: 100%; height: 100%; object-fit: contain; background: #020617; border-radius: 8px; min-height: 0; }}
+        .submission-image-modal-content p {{ margin: 0; color: #cbd5e1; font-size: 13px; word-break: break-word; }}
+        .submission-image-nav {{
+            width: 40px;
+            height: 40px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            text-decoration: none;
+            font-size: 24px;
+            line-height: 1;
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #e2e8f0;
+            user-select: none;
+        }}
+        .submission-image-nav:hover {{ background: #334155; }}
+        .submission-image-modal-close {{
+            align-self: flex-end;
+            display: inline-block;
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #e2e8f0;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            text-decoration: none;
+        }}
+        .submission-image-modal-close:hover {{ background: #334155; }}
         pre {{ background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }}
         .expected-text {{ background: #f8fafc; color: #111827; border: 1px solid #e5e7eb; }}
         .inventory-text {{ background: #f8fafc; color: #111827; border: 1px solid #cbd5e1; margin: 0; }}
@@ -2617,6 +2850,9 @@ PART SCORES:
             .code-row {{ grid-template-columns: 1fr; }}
             .line-note {{ margin-top: 4px; }}
             .scroll-top-btn {{ right: 14px; bottom: 14px; width: 42px; height: 42px; font-size: 20px; }}
+            .submission-image-modal-content {{ inset: 3vh 3vw; }}
+            .submission-image-stage {{ grid-template-columns: 36px minmax(0, 1fr) 36px; gap: 6px; }}
+            .submission-image-nav {{ width: 34px; height: 34px; font-size: 20px; }}
         }}
     </style>
 </head>
@@ -2636,6 +2872,7 @@ PART SCORES:
 
         {submission_tree_html}
         {submission_inventory_html}
+        {image_gallery_html}
 
         <h2>Detailed Feedback</h2>
         {parts_html}
@@ -2645,101 +2882,6 @@ PART SCORES:
             <p>{overall_feedback}</p>
         </section>
     </div>
-    <button type="button" class="scroll-top-btn" aria-label="Scroll to top" title="Scroll to top">↑</button>
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {{
-            const scrollTopButton = document.querySelector('.scroll-top-btn');
-            const toggleScrollTopButton = () => {{
-                if (!scrollTopButton) {{
-                    return;
-                }}
-                scrollTopButton.classList.toggle('visible', window.scrollY > 240);
-            }};
-
-            if (scrollTopButton) {{
-                scrollTopButton.addEventListener('click', () => {{
-                    window.scrollTo({{ top: 0, behavior: 'smooth' }});
-                }});
-                window.addEventListener('scroll', toggleScrollTopButton, {{ passive: true }});
-                toggleScrollTopButton();
-            }}
-
-            const minLeftPercent = 20;
-            const maxLeftPercent = 55;
-
-            for (const split of document.querySelectorAll('.part-split')) {{
-                const grid = split.querySelector('.part-grid');
-                const toggle = split.querySelector('.toggle-expected-btn');
-                const splitter = split.querySelector('.splitter');
-                if (!grid || !toggle || !splitter) {{
-                    continue;
-                }}
-
-                const setToggleLabel = () => {{
-                    const collapsed = grid.classList.contains('is-collapsed');
-                    toggle.textContent = collapsed ? 'Show Assignment Requirements' : 'Hide Assignment Requirements';
-                    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-                }};
-
-                toggle.addEventListener('click', () => {{
-                    grid.classList.toggle('is-collapsed');
-                    setToggleLabel();
-                }});
-
-                const updateWidth = (clientX) => {{
-                    const rect = grid.getBoundingClientRect();
-                    if (!rect.width) {{
-                        return;
-                    }}
-                    const nextPercent = ((clientX - rect.left) / rect.width) * 100;
-                    const clampedPercent = Math.min(maxLeftPercent, Math.max(minLeftPercent, nextPercent));
-                    grid.style.setProperty('--left-panel-width', `${{clampedPercent}}%`);
-                }};
-
-                const stopDrag = () => {{
-                    document.body.classList.remove('is-resizing-report');
-                    window.removeEventListener('pointermove', onPointerMove);
-                    window.removeEventListener('pointerup', stopDrag);
-                }};
-
-                const onPointerMove = (event) => {{
-                    updateWidth(event.clientX);
-                }};
-
-                splitter.addEventListener('pointerdown', (event) => {{
-                    if (window.matchMedia('(max-width: 900px)').matches) {{
-                        return;
-                    }}
-                    if (grid.classList.contains('is-collapsed')) {{
-                        grid.classList.remove('is-collapsed');
-                        setToggleLabel();
-                    }}
-                    document.body.classList.add('is-resizing-report');
-                    splitter.setPointerCapture(event.pointerId);
-                    updateWidth(event.clientX);
-                    window.addEventListener('pointermove', onPointerMove);
-                    window.addEventListener('pointerup', stopDrag, {{ once: true }});
-                }});
-
-                splitter.addEventListener('keydown', (event) => {{
-                    if (grid.classList.contains('is-collapsed')) {{
-                        return;
-                    }}
-                    const current = parseFloat(getComputedStyle(grid).getPropertyValue('--left-panel-width')) || 32;
-                    if (event.key === 'ArrowLeft') {{
-                        event.preventDefault();
-                        grid.style.setProperty('--left-panel-width', `${{Math.max(minLeftPercent, current - 2)}}%`);
-                    }}
-                    if (event.key === 'ArrowRight') {{
-                        event.preventDefault();
-                        grid.style.setProperty('--left-panel-width', `${{Math.min(maxLeftPercent, current + 2)}}%`);
-                    }}
-                }});
-
-                setToggleLabel();
-            }}
-        }});
-    </script>
 </body>
 </html>
 """
@@ -2863,7 +3005,18 @@ PART SCORES:
                 if 'error' not in result:
                     print(f"📝 Generating report for {student_name}...")
                     report = self.generate_grade_report(student_name, result, assignment_name)
-                    html_report = self.generate_grade_report_html(student_name, result, assignment_name, instructions_html)
+                    student_images = self._prepare_report_image_assets(
+                        student_name,
+                        self.student_image_artifacts.get(student_name, []),
+                        output_dir,
+                    )
+                    html_report = self.generate_grade_report_html(
+                        student_name,
+                        result,
+                        assignment_name,
+                        instructions_html,
+                        report_images=student_images,
+                    )
                     
                     # Save detailed report
                     safe_name = re.sub(r'[<>:"/\\|?*]', '_', student_name)
@@ -3056,7 +3209,18 @@ def main():
                     assignment_name = Path(INSTRUCTIONS).stem.replace('-', ' ').replace('_', ' ')
                     instructions_html = grader.load_assignment_instructions(INSTRUCTIONS)
                     report = grader.generate_grade_report(student_found, result, assignment_name)
-                    html_report = grader.generate_grade_report_html(student_found, result, assignment_name, instructions_html)
+                    student_images = grader._prepare_report_image_assets(
+                        student_found,
+                        grader.student_image_artifacts.get(student_found, []),
+                        OUTPUT_DIR,
+                    )
+                    html_report = grader.generate_grade_report_html(
+                        student_found,
+                        result,
+                        assignment_name,
+                        instructions_html,
+                        report_images=student_images,
+                    )
                     print(report)
 
                     safe_name = re.sub(r'[<>:"/\\|?*]', '_', student_found)

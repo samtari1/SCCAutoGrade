@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$ROOT_DIR/.logs"
 mkdir -p "$LOG_DIR"
+DETACH_MODE="0"
 REDIS_MODE="unknown"
 INMEMORY_MODE="0"
 EXPLICIT_INMEMORY_MODE="${USE_INMEMORY_QUEUE:-0}"
@@ -16,12 +17,20 @@ WORKER_QUEUES=(
 )
 PIDS=()
 
+if [[ "${1:-}" == "--detach" ]]; then
+  DETACH_MODE="1"
+fi
+
 docker_socket_available() {
   [[ -S /var/run/docker.sock || -S "$HOME/.docker/run/docker.sock" ]]
 }
 
 stop_stale_processes() {
   echo "[start] Cleaning up stale project processes..."
+
+  # Match both venv and system-python command forms; otherwise stale workers can survive.
+  pkill -f "uvicorn backend.app.main:app" >/dev/null 2>&1 || true
+  pkill -f "backend.worker" >/dev/null 2>&1 || true
 
   pkill -f "$ROOT_DIR/.venv/bin/python -m uvicorn backend.app.main:app" >/dev/null 2>&1 || true
   pkill -f "$ROOT_DIR/.venv/bin/python -m backend.worker" >/dev/null 2>&1 || true
@@ -118,7 +127,9 @@ cleanup() {
   fi
 }
 
-trap cleanup EXIT INT TERM
+# Only clean up on interrupt/termination in foreground mode.
+# Avoid EXIT trap so transient launcher exits do not tear down child services.
+trap cleanup INT TERM
 
 echo "[start] Launching backend API (http://localhost:8000)..."
 (
@@ -168,5 +179,10 @@ if [[ "$INMEMORY_MODE" == "1" ]]; then
   echo "[start] Queue backend: in-memory (single-process dev mode)."
 fi
 echo "[start] Press Ctrl+C to stop all app processes."
+
+if [[ "$DETACH_MODE" == "1" ]]; then
+  echo "[start] Detach mode enabled. Services will keep running after this command exits."
+  exit 0
+fi
 
 wait
