@@ -96,6 +96,8 @@ require_cmd systemctl
 log "Running setup to sync backend/frontend dependencies..."
 "$ROOT_DIR/setup.sh"
 
+find "$ROOT_DIR/backend" -type d -name '__pycache__' -prune -exec rm -rf {} +
+
 VITE_API_BASE_VALUE="$(resolve_vite_api_base)"
 log "Building frontend with VITE_API_BASE=$VITE_API_BASE_VALUE"
 (

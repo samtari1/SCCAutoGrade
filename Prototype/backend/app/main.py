@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import StreamingResponse
+from redis.exceptions import ConnectionError as RedisConnectionError
 from rq.command import send_stop_job_command
 from rq.exceptions import InvalidJobOperation
 from rq.job import Job, NoSuchJobError
@@ -275,6 +276,8 @@ def _fetch_rq_job(job_id: str) -> Optional[Job]:
         return Job.fetch(job_id, connection=get_redis())
     except NoSuchJobError:
         return None
+    except RedisConnectionError as exc:
+        raise _redis_unavailable_error() from exc
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -325,6 +328,13 @@ def _assert_job_access(job_id: str, user: dict) -> None:
     owner_user_id = _job_owner_user_id(job_id)
     if not owner_user_id or owner_user_id != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized to access this job")
+
+
+def _redis_unavailable_error() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Redis queue is unavailable. Start Redis or enable USE_INMEMORY_QUEUE=1.",
+    )
 
 
 app = FastAPI(title="AutoGrade API", version="0.1.0")
@@ -561,26 +571,29 @@ async def create_job(
             selected_students=parsed_selected_students,
         )
     else:
-        queue = get_queue(queue_name)
-        queue.enqueue(
-            run_grading_job,
-            job_id,
-            str(zip_path),
-            str(instructions_path),
-            str(output_dir),
-            selected_evaluator,
-            route_type,
-            routing_reason,
-            code_specialty,
-            multi_agent_grading,
-            multi_agent_disagreement_threshold,
-            multi_agent_part_disagreement_threshold,
-            grading_context,
-            None,
-            parsed_selected_students,
-            job_id=job_id,
-            job_timeout="2h",
-        )
+        try:
+            queue = get_queue(queue_name)
+            queue.enqueue(
+                run_grading_job,
+                job_id,
+                str(zip_path),
+                str(instructions_path),
+                str(output_dir),
+                selected_evaluator,
+                route_type,
+                routing_reason,
+                code_specialty,
+                multi_agent_grading,
+                multi_agent_disagreement_threshold,
+                multi_agent_part_disagreement_threshold,
+                grading_context,
+                None,
+                parsed_selected_students,
+                job_id=job_id,
+                job_timeout="2h",
+            )
+        except RedisConnectionError as exc:
+            raise _redis_unavailable_error() from exc
 
     return CreateJobResponse(
         job_id=job_id,
@@ -814,6 +827,8 @@ def cancel_job(job_id: str, request: Request) -> dict:
             send_stop_job_command(get_redis(), job_id)
         except InvalidJobOperation as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RedisConnectionError as exc:
+            raise _redis_unavailable_error() from exc
 
         # Best-effort UX hint while worker transitions state.
         job.meta["message"] = "Stop requested"
@@ -917,34 +932,37 @@ def resume_job(job_id: str, request: Request) -> dict:
             selected_students=selected_students,
         )
     else:
-        queue = get_queue(queue_name)
-        job = _fetch_rq_job(job_id)
-        if job:
-            status = str(job.get_status(refresh=True))
-            if status not in {"finished", "failed", "stopped", "canceled"}:
-                return {
-                    "job_id": job_id,
-                    "status": status,
-                    "message": f"Cannot resume job in state '{status}'. Job must be stopped, canceled, or failed.",
-                }
-        
-        queue.enqueue(
-            run_grading_job,
-            job_id,
-            str(input_dir / "submissions.zip"),
-            str(input_dir / "instructions.html"),
-            str(output_dir),
-            evaluator_key,
-            route_type,
-            f"{routing_reason} ({len(completed_students)} previously completed)",
-            code_specialty,
-            True,
-            5.0,
-            10.0,
-            "",
-            completed_students,
-            selected_students,
-        )
+        try:
+            queue = get_queue(queue_name)
+            job = _fetch_rq_job(job_id)
+            if job:
+                status = str(job.get_status(refresh=True))
+                if status not in {"finished", "failed", "stopped", "canceled"}:
+                    return {
+                        "job_id": job_id,
+                        "status": status,
+                        "message": f"Cannot resume job in state '{status}'. Job must be stopped, canceled, or failed.",
+                    }
+
+            queue.enqueue(
+                run_grading_job,
+                job_id,
+                str(input_dir / "submissions.zip"),
+                str(input_dir / "instructions.html"),
+                str(output_dir),
+                evaluator_key,
+                route_type,
+                f"{routing_reason} ({len(completed_students)} previously completed)",
+                code_specialty,
+                True,
+                5.0,
+                10.0,
+                "",
+                completed_students,
+                selected_students,
+            )
+        except RedisConnectionError as exc:
+            raise _redis_unavailable_error() from exc
     
     return {
         "job_id": job_id,

@@ -64,6 +64,8 @@ fi
 
 echo "[start] Syncing backend Python dependencies..."
 "$ROOT_DIR/.venv/bin/python" -m pip install --disable-pip-version-check -r "$ROOT_DIR/backend/requirements.txt" >/dev/null
+>
+find "$ROOT_DIR/backend" -type d -name '__pycache__' -prune -exec rm -rf {} +
 
 stop_stale_processes
 

@@ -165,6 +165,20 @@ function App() {
     return res;
   }, [authToken]);
 
+  const readResponseBody = useCallback(async (res) => {
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      return await res.json();
+    }
+
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { detail: text || `Request failed with status ${res.status}` };
+    }
+  }, []);
+
   useEffect(() => {
     const onHashChange = () => setPage(routeFromHash());
     window.addEventListener("hashchange", onHashChange);
@@ -651,7 +665,7 @@ function App() {
         body: form
       });
 
-      const data = await res.json();
+      const data = await readResponseBody(res);
       if (!res.ok) {
         throw new Error(data.detail || "Failed to create job");
       }
