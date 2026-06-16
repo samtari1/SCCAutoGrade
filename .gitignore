@@ -220,3 +220,6 @@ Prototype/frontend/.vite/
 # Local databases
 *.sqlite3
 auth.db
+*.db-wal
+*.db-shm
+*.db
