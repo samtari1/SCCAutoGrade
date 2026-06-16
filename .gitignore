@@ -222,4 +222,4 @@ Prototype/frontend/.vite/
 auth.db
 *.db-wal
 *.db-shm
-*.db
+*.dbPrototype/backend/data/auth.db

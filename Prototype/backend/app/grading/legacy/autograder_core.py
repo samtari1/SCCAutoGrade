@@ -631,6 +631,7 @@ class AutoGrader:
 
         target_exts = self._target_extensions()
         matched_files = []
+        archive_files = []
 
         for root, dirs, files in os.walk(directory):
             dirs[:] = [d for d in dirs if not self._is_ignored_directory(d)]
@@ -639,18 +640,20 @@ class AutoGrader:
                 file_path = os.path.join(root, file)
                 if Path(file).suffix.lower() in target_exts:
                     matched_files.append(file_path)
+                elif file.lower().endswith(('.zip', '.7z')):
+                    archive_files.append(file_path)
 
-            if not matched_files:
-                for file in files:
-                    lowered = file.lower()
-                    if lowered.endswith('.zip'):
-                        content = self._extract_submission_from_nested_structure(os.path.join(root, file))
-                        if content:
-                            return self._append_submission_artifact_notes(content, directory)
-                    elif lowered.endswith('.7z'):
-                        content = self._extract_submission_from_7z_structure(os.path.join(root, file))
-                        if content:
-                            return self._append_submission_artifact_notes(content, directory)
+        if not matched_files:
+            for archive_path in sorted(archive_files):
+                lowered = archive_path.lower()
+                if lowered.endswith('.zip'):
+                    content = self._extract_submission_from_nested_structure(archive_path)
+                    if content:
+                        return self._append_submission_artifact_notes(content, directory)
+                elif lowered.endswith('.7z'):
+                    content = self._extract_submission_from_7z_structure(archive_path)
+                    if content:
+                        return self._append_submission_artifact_notes(content, directory)
 
         if not matched_files:
             # Weekly reports can be text/docx/pdf/pptx without SQL/code files.
@@ -827,6 +830,11 @@ class AutoGrader:
     def _is_grouping_directory(self, entry: Path) -> bool:
         """Return True if all visible children are submission containers (folders/zips/7z) and there are no direct files."""
         if not entry.is_dir():
+            return False
+
+        # Student folders from LMS (like Moodle) should not be treated as grouping directories
+        name_lower = entry.name.lower()
+        if "assignsubmission_" in name_lower or "assignsubmission_file" in name_lower:
             return False
 
         children = self._visible_entries(entry)
@@ -1333,6 +1341,7 @@ class AutoGrader:
         """Recursively find and extract C# source content from a directory"""
         csharp_files = []
         all_files = []
+        archive_files = []
 
         for root, dirs, files in os.walk(directory):
             # Skip generated/build folders to reduce noise.
@@ -1349,20 +1358,20 @@ class AutoGrader:
                 if file_lower.endswith('.cs'):
                     file_path = os.path.join(root, file)
                     csharp_files.append(file_path)
+                elif file_lower.endswith(('.zip', '.7z')):
+                    archive_files.append(os.path.join(root, file))
 
-            # If no C# files found yet, look for nested archives.
-            if not csharp_files:
-                for file in files:
-                    if file.lower().endswith('.zip'):
-                        zip_path = os.path.join(root, file)
-                        csharp_content = self.extract_csharp_from_nested_structure(zip_path)
-                        if csharp_content:
-                            return csharp_content
-                    elif file.lower().endswith('.7z'):
-                        archive_path = os.path.join(root, file)
-                        csharp_content = self.extract_csharp_from_7z_structure(archive_path)
-                        if csharp_content:
-                            return csharp_content
+        # If no C# files found in the entire walk, look for nested archives.
+        if not csharp_files:
+            for archive_path in sorted(archive_files):
+                if archive_path.lower().endswith('.zip'):
+                    csharp_content = self.extract_csharp_from_nested_structure(archive_path)
+                    if csharp_content:
+                        return csharp_content
+                elif archive_path.lower().endswith('.7z'):
+                    csharp_content = self.extract_csharp_from_7z_structure(archive_path)
+                    if csharp_content:
+                        return csharp_content
 
         if not csharp_files:
             return ""
